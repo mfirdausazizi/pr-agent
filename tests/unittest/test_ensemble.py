@@ -62,15 +62,23 @@ async def test_gather_ensemble_predictions_keeps_successes_and_drops_failures():
             raise RuntimeError("boom")
         if model == "empty-model":
             return ""
+        return f"prediction-from-{model}"
+
+    results = await gather_ensemble_predictions(
+        fake_fn, ["good-a", "bad-model", "empty-model", "good-b"])
+    assert results == [("good-a", "prediction-from-good-a"),
+                       ("good-b", "prediction-from-good-b")]
+
+
+@pytest.mark.asyncio
+async def test_gather_ensemble_predictions_propagates_cancellation():
+    async def fake_fn(model):
         if model == "cancelled-model":
             raise asyncio.CancelledError("cancelled")
         return f"prediction-from-{model}"
 
-    results = await gather_ensemble_predictions(
-        fake_fn, ["good-a", "bad-model", "empty-model", "good-b", "cancelled-model"])
-    assert results == [("good-a", "prediction-from-good-a"),
-                       ("good-b", "prediction-from-good-b")]
-    assert not any(m == "cancelled-model" for m, _ in results)
+    with pytest.raises(asyncio.CancelledError):
+        await gather_ensemble_predictions(fake_fn, ["good-a", "cancelled-model"])
 
 
 def test_pick_min_budget_model_prefers_smallest_known_budget(monkeypatch):

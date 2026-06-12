@@ -55,7 +55,10 @@ async def gather_ensemble_predictions(fn: Callable[[str], Awaitable[T]],
     results = await asyncio.gather(*[fn(model) for model in models], return_exceptions=True)
     successes = []
     for model, result in zip(models, results):
-        if isinstance(result, BaseException):
+        if isinstance(result, BaseException) and not isinstance(result, Exception):
+            # cancellation / interpreter exit must propagate, never be swallowed
+            raise result
+        if isinstance(result, Exception):
             get_logger().warning(f"Ensemble model {model} failed", artifact={"error": result})
         elif result:
             successes.append((model, result))
