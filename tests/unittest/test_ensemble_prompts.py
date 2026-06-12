@@ -44,3 +44,25 @@ def test_review_consolidate_prompt_is_registered_and_renders():
     rendered = environment.from_string(user_template).render(variables)
     assert "(replace '...'" in rendered
     assert "Ticket Requirements:" in rendered
+
+
+def test_reflect_consolidate_prompt_is_registered_and_renders():
+    settings = get_settings()
+    system_template = settings.get("pr_code_suggestions_reflect_consolidate_prompt.system")
+    user_template = settings.get("pr_code_suggestions_reflect_consolidate_prompt.user")
+    assert system_template
+    assert user_template
+
+    # mirrors the variables dict built by self_reflect_on_suggestions
+    variables = {"suggestion_list": [], "suggestion_str": "suggestion 1: {...}",
+                 "diff": "the-diff", "num_code_suggestions": 1,
+                 "prev_suggestions_str": "", "is_ai_metadata": False,
+                 "duplicate_prompt_examples": False}
+    environment = Environment(undefined=StrictUndefined)
+    rendered_system = environment.from_string(system_template).render(variables)
+    rendered_user = environment.from_string(user_template).render(variables)
+
+    assert "duplicate" in rendered_system.lower()
+    assert "source_model" in rendered_system
+    assert "suggestion 1" in rendered_user
+    assert "the-diff" in rendered_user
