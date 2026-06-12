@@ -383,7 +383,8 @@ class PRCodeSuggestions:
         data = self.prediction
         return data
 
-    async def _get_prediction(self, model: str, patches_diff: str, patches_diff_no_line_number: str) -> dict:
+    async def _get_suggestions_prediction(self, model: str, patches_diff: str,
+                                          patches_diff_no_line_number: str) -> dict:
         variables = copy.deepcopy(self.vars)
         variables["diff"] = patches_diff  # update diff
         variables["diff_no_line_numbers"] = patches_diff_no_line_number  # update diff
@@ -397,7 +398,24 @@ class PRCodeSuggestions:
             get_settings().user_prompt = user_prompt
 
         # load suggestions from the AI response
-        data = self._prepare_pr_code_suggestions(response)
+        return self._prepare_pr_code_suggestions(response)
+
+    async def _reflect_and_score(self, data: dict, patches_diff: str, model: str,
+                                 dedicated_prompt: str = "") -> bool:
+        response_reflect = await self.self_reflect_on_suggestions(data["code_suggestions"],
+                                                                  patches_diff, model=model,
+                                                                  dedicated_prompt=dedicated_prompt)
+        if response_reflect:
+            await self.analyze_self_reflection_response(data, response_reflect)
+            return True
+        # get_logger().error(f"Could not self-reflect on suggestions. using default score 7")
+        for i, suggestion in enumerate(data["code_suggestions"]):
+            suggestion["score"] = 7
+            suggestion["score_why"] = ""
+        return False
+
+    async def _get_prediction(self, model: str, patches_diff: str, patches_diff_no_line_number: str) -> dict:
+        data = await self._get_suggestions_prediction(model, patches_diff, patches_diff_no_line_number)
 
         # self-reflect on suggestions (mandatory, since line numbers are generated now here)
         model_reflect_with_reasoning = get_model('model_reasoning')
@@ -407,15 +425,7 @@ class PRCodeSuggestions:
             # we are using a fallback model (should not happen on regular conditions)
             get_logger().warning(f"Using the same model for self-reflection as the one used for suggestions")
             model_reflect_with_reasoning = model
-        response_reflect = await self.self_reflect_on_suggestions(data["code_suggestions"],
-                                                                  patches_diff, model=model_reflect_with_reasoning)
-        if response_reflect:
-            await self.analyze_self_reflection_response(data, response_reflect)
-        else:
-            # get_logger().error(f"Could not self-reflect on suggestions. using default score 7")
-            for i, suggestion in enumerate(data["code_suggestions"]):
-                suggestion["score"] = 7
-                suggestion["score_why"] = ""
+        await self._reflect_and_score(data, patches_diff, model_reflect_with_reasoning)
 
         return data
 
@@ -667,8 +677,7 @@ class PRCodeSuggestions:
             get_logger().error(f"Error removing line numbers from patches_diff_list, error: {e}")
             return patches_diff_list
 
-    async def prepare_prediction_main(self, model: str) -> dict:
-        # get PR diff
+    async def _build_diff_chunks(self, model: str) -> None:
         if get_settings().pr_code_suggestions.decouple_hunks:
             self.patches_diff_list = get_pr_multi_diffs(self.git_provider,
                                                         self.token_handler,
@@ -694,6 +703,29 @@ class PRCodeSuggestions:
                                                             max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                                                             add_line_numbers=True)  # decouple hunk with line numbers
 
+    def _merge_predictions_by_score(self, prediction_list: List[dict]) -> dict:
+        data = {"code_suggestions": []}
+        for j, predictions in enumerate(prediction_list):  # each call adds an element to the list
+            if predictions and "code_suggestions" in predictions:
+                score_threshold = max(1, int(get_settings().pr_code_suggestions.suggestions_score_threshold))
+                for i, prediction in enumerate(predictions["code_suggestions"]):
+                    try:
+                        score = int(prediction.get("score", 1))
+                        if score >= score_threshold:
+                            data["code_suggestions"].append(prediction)
+                        else:
+                            get_logger().info(
+                                f"Removing suggestions {i} from call {j}, because score is {score}, and score_threshold is {score_threshold}",
+                                artifact=prediction)
+                    except Exception as e:
+                        get_logger().error(f"Error getting PR diff for suggestion {i} in call {j}, error: {e}",
+                                           artifact={"prediction": prediction})
+        return data
+
+    async def prepare_prediction_main(self, model: str) -> dict:
+        # get PR diff
+        await self._build_diff_chunks(model)
+
         if self.patches_diff_list:
             get_logger().info(f"Number of PR chunk calls: {len(self.patches_diff_list)}")
             get_logger().debug(f"PR diff:", artifact=self.patches_diff_list)
@@ -711,23 +743,7 @@ class PRCodeSuggestions:
                     prediction = await self._get_prediction(model, patches_diff, patches_diff_no_line_numbers)
                     prediction_list.append(prediction)
 
-            data = {"code_suggestions": []}
-            for j, predictions in enumerate(prediction_list):  # each call adds an element to the list
-                if "code_suggestions" in predictions:
-                    score_threshold = max(1, int(get_settings().pr_code_suggestions.suggestions_score_threshold))
-                    for i, prediction in enumerate(predictions["code_suggestions"]):
-                        try:
-                            score = int(prediction.get("score", 1))
-                            if score >= score_threshold:
-                                data["code_suggestions"].append(prediction)
-                            else:
-                                get_logger().info(
-                                    f"Removing suggestions {i} from call {j}, because score is {score}, and score_threshold is {score_threshold}",
-                                    artifact=prediction)
-                        except Exception as e:
-                            get_logger().error(f"Error getting PR diff for suggestion {i} in call {j}, error: {e}",
-                                               artifact={"prediction": prediction})
-            self.data = data
+            self.data = data = self._merge_predictions_by_score(prediction_list)
         else:
             get_logger().warning(f"Empty PR diff list")
             self.data = data = None
