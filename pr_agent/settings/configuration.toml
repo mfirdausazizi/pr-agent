@@ -8,6 +8,8 @@ model="gpt-5.5-2026-04-23"
 fallback_models=["gpt-5.4-mini"]
 #model_reasoning="gpt-5.4-mini" # dedicated reasoning model for self-reflection
 #model_weak="gpt-5.4-nano" # optional, a weaker model to use for some easier tasks
+#ensemble_models=["claude-opus-4-8", "gpt-5.5-2026-04-23"] # optional, run /review and /improve with several models independently and consolidate their findings
+#ensemble_consolidator_model="claude-opus-4-8" # optional, the model that consolidates ensemble findings; defaults to the first ensemble model
 # CLI
 git_provider="github"
 publish_output=true
@@ -89,6 +91,8 @@ publish_output_no_suggestions=true # Set to "false" if you only need the reviewe
 persistent_comment=true
 extra_instructions = ""
 num_max_findings = 3
+#ensemble_models=[] # optional, override config.ensemble_models for /review only
+#ensemble_consolidator_model="" # optional, override config.ensemble_consolidator_model for /review only
 final_update_message = true
 # review labels
 enable_review_labels_security=true
@@ -135,6 +139,8 @@ use_conversation_history=true
 commitable_code_suggestions = false
 dual_publishing_score_threshold=-1 # -1 to disable, [0-10] to set the threshold (>=) for publishing a code suggestion both in a table and as committable
 focus_only_on_problems=true
+#ensemble_models=[] # optional, override config.ensemble_models for /improve only
+#ensemble_consolidator_model="" # optional, override config.ensemble_consolidator_model for /improve only
 #
 extra_instructions = ""
 enable_help_text=false
