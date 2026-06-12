@@ -1,0 +1,46 @@
+from jinja2 import Environment, StrictUndefined
+
+from pr_agent.config_loader import get_settings
+
+
+def review_consolidate_vars():
+    # mirrors PRReviewer.__init__ self.vars plus the consolidation-only variables
+    return {
+        "title": "test title", "branch": "main", "description": "desc",
+        "language": "Python", "diff": "the-diff", "num_pr_files": 1,
+        "num_max_findings": 3, "require_score": False, "require_tests": True,
+        "require_estimate_effort_to_review": True,
+        "require_estimate_contribution_time_cost": False,
+        "require_can_be_split_review": False, "require_security_review": True,
+        "require_todo_scan": False, "question_str": "", "answer_str": "",
+        "extra_instructions": "", "commit_messages_str": "", "custom_labels": "",
+        "enable_custom_labels": False, "is_ai_metadata": False,
+        "related_tickets": [], "duplicate_prompt_examples": False,
+        "date": "2026-06-12",
+        "model_reviews": "## Review from model 'model-a':\nreview-a-yaml",
+    }
+
+
+def test_review_consolidate_prompt_is_registered_and_renders():
+    settings = get_settings()
+    system_template = settings.get("pr_review_consolidate_prompt.system")
+    user_template = settings.get("pr_review_consolidate_prompt.user")
+    assert system_template
+    assert user_template
+
+    environment = Environment(undefined=StrictUndefined)
+    variables = review_consolidate_vars()
+    rendered_system = environment.from_string(system_template).render(variables)
+    rendered_user = environment.from_string(user_template).render(variables)
+
+    assert "$PRReview" in rendered_system
+    assert "key_issues_to_review" in rendered_system
+    assert "review-a-yaml" in rendered_user
+    assert "the-diff" in rendered_user
+
+    # Re-render with duplicate_prompt_examples and related_tickets to test new blocks
+    variables["duplicate_prompt_examples"] = True
+    variables["related_tickets"] = [{"ticket_url": "u", "title": "t", "labels": "l", "body": "b", "requirements": "r"}]
+    rendered = environment.from_string(user_template).render(variables)
+    assert "(replace '...'" in rendered
+    assert "Ticket Requirements:" in rendered
