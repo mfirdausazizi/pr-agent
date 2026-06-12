@@ -445,3 +445,23 @@ enable_claude_extended_thinking = false # Set to true to enable extended thinkin
 extended_thinking_budget_tokens = 2048
 extended_thinking_max_output_tokens = 4096
 ```
+
+## Multi-model ensemble
+
+`/review` and `/improve` can run several models and consolidate their findings —
+see [Multi-model ensemble](../core-abilities/ensemble_review.md).
+
+When all models are served through one OpenAI-compatible endpoint (LiteLLM
+proxy, CLIProxyAPI, etc.), configure the endpoint once and list the models with
+an `openai/` prefix:
+
+```toml
+[openai]
+key = "..."         # your proxy API key
+api_base = "http://localhost:8317/v1"
+
+[config]
+ensemble_models = ["openai/claude-opus-4-8", "openai/gpt-5.5"]
+ensemble_consolidator_model = "openai/claude-opus-4-8"
+custom_model_max_tokens = 200000  # token budget for models not in pr-agent's MAX_TOKENS table
+```

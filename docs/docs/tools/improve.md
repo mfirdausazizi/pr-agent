@@ -344,3 +344,15 @@ Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 line
 - **Hierarchy:** Presenting the suggestions in a structured hierarchical table enables the user to _quickly_ understand them, and to decide which ones are relevant and which are not.
 - **Customization:** To guide the model to suggestions that are more relevant to the specific needs of your project, we recommend using the [`extra_instructions`](./improve.md#extra-instructions-and-best-practices) and [`best practices`](./improve.md#best-practices) fields.
 - **Model Selection:** For specific programming languages or use cases, some models may perform better than others.
+
+## Multi-model ensemble
+
+This tool can run several models independently and consolidate their findings
+with a dedicated consolidator model. See the
+[ensemble documentation](../core-abilities/ensemble_review.md) for details:
+
+```toml
+[config]
+ensemble_models = ["claude-opus-4-8", "gpt-5.5-2026-04-23"]
+ensemble_consolidator_model = "claude-opus-4-8"
+```

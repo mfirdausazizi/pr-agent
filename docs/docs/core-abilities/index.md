@@ -8,6 +8,7 @@ PR-Agent utilizes a variety of core abilities to provide a comprehensive and eff
 - [Interactivity](./interactivity.md)
 - [Local and global metadata](./metadata.md)
 - [Self-reflection](./self_reflection.md)
+- [Multi-model ensemble](./ensemble_review.md)
 
 ## Blogs
 
