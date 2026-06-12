@@ -814,6 +814,10 @@ class PRCodeSuggestions:
         self.ensemble_models_used = [m for m in ensemble.models if m in models_used]
 
         self.data = data = self._merge_predictions_by_score(prediction_list)
+        # source_model served the consolidating reflection; it is internal
+        # attribution and not part of the published output
+        for suggestion in data.get("code_suggestions", []):
+            suggestion.pop("source_model", None)
         return data
 
     async def _get_chunk_ensemble_prediction(self, ensemble: EnsembleConfig, patches_diff: str,

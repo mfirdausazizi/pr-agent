@@ -86,6 +86,8 @@ def pick_min_budget_model(models: List[str]) -> str:
 
 
 def ensemble_footer(models: List[str], consolidator: str, consolidated: bool) -> str:
+    # consolidated=False intentionally covers both degradations (a single surviving
+    # model and a failed consolidation call) — both render as "consolidation skipped"
     models_str = " + ".join(f"`{m}`" for m in models)
     if consolidated:
         return f"\n\n> 🧬 **Ensemble**: {models_str} · consolidated by `{consolidator}`\n"
