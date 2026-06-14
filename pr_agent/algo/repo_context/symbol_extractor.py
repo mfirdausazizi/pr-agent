@@ -269,6 +269,15 @@ def _symbol_from_javascript_line(
             rf"(?:\([^)]*\)|{_IDENTIFIER})(?:\s*:\s*[^=]+)?\s*=>",
             "function",
         ),
+        (
+            rf"\b({_IDENTIFIER})\s*:\s*(?:async\s+)?function\b",
+            "method",
+        ),
+        (
+            rf"\b({_IDENTIFIER})\s*:\s*(?:async\s*)?"
+            rf"(?:\([^)]*\)|{_IDENTIFIER})(?:\s*:\s*[^=]+)?\s*=>",
+            "method",
+        ),
         (rf"\bclass\s+({_IDENTIFIER})\b", "class"),
         (rf"\bmodule\.exports\.({_IDENTIFIER})\s*=", "function"),
         (rf"\bexports\.({_IDENTIFIER})\s*=", "function"),

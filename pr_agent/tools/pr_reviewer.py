@@ -128,10 +128,8 @@ class PRReviewer:
             except ModuleNotFoundError:
                 workspace_manager_module = importlib.import_module("pr_agent.algo.repo_context.workspace")
             context_builder_module = importlib.import_module("pr_agent.algo.repo_context.context_builder")
-            changed_ranges_module = importlib.import_module("pr_agent.algo.repo_context.changed_ranges")
             RepoWorkspaceManager = workspace_manager_module.RepoWorkspaceManager
             RepoContextBuilder = context_builder_module.RepoContextBuilder
-            parse_changed_ranges = changed_ranges_module.parse_changed_ranges
             repo_context_settings = get_settings().repo_context
             external_repositories = repo_context_settings.get("external_repositories",
                                                               repo_context_settings.get("cross_repos", []))
@@ -165,16 +163,6 @@ class PRReviewer:
             ])
             workspace_session = self._open_repo_context_workspace(workspace_manager)
             diff_files = self.git_provider.get_diff_files()
-            context_diff_files = [
-                {"path": diff_file.filename, "changed_ranges": [
-                    {
-                        "start": getattr(changed_range, "start", getattr(changed_range, "start_line", None)),
-                        "end": getattr(changed_range, "end", getattr(changed_range, "end_line", None)),
-                    }
-                    for changed_range in parse_changed_ranges(diff_file)
-                ]}
-                for diff_file in diff_files
-            ]
             searcher = self._build_repo_context_searcher(workspace_session)
             builder = self._instantiate_repo_context_component(RepoContextBuilder, [
                 {"workspace_session": workspace_session, "searcher": searcher, "fail_open": False},
@@ -184,7 +172,7 @@ class PRReviewer:
                 {},
             ])
             bundle = builder.build(
-                diff_files=context_diff_files,
+                diff_files=diff_files,
                 max_agent_rounds=get_settings().repo_context.get("max_agent_rounds", 1),
             )
             self.vars.update(self._format_repo_context_vars(get_settings().config.model, bundle))

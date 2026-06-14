@@ -254,6 +254,69 @@ def test_build_repo_context_uses_production_searcher_and_renders_context(tmp_pat
     assert str(tmp_path) not in reviewer.vars["repo_context"]
 
 
+def test_build_repo_context_uses_full_diff_file_for_js_enclosing_symbol(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "core").mkdir()
+    (repo / "routes").mkdir()
+    (repo / "core" / "common.js").write_text(
+        "const Common = {\n"
+        "  db_delete: async function(table, data) {\n"
+        "    if (!Array.isArray(data) || data.length === 0) {\n"
+        "      throw new Error('blocked');\n"
+        "    }\n"
+        "    return data;\n"
+        "  }\n"
+        "};\n"
+    )
+    (repo / "routes" / "users.js").write_text(
+        "const Common = require('../core/common');\n"
+        "async function removeUser(id) {\n"
+        "  return Common.db_delete('users', { id });\n"
+        "}\n"
+    )
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True, text=True)
+
+    settings = get_settings()
+    original = dict(settings.repo_context)
+    settings.repo_context.enabled = True
+    settings.repo_context.fallback_to_diff_only = False
+    settings.repo_context.max_context_tokens = 400
+    settings.repo_context.max_context_snippets = 10
+    git_provider = MagicMock()
+    git_provider.pr = MagicMock()
+    git_provider.get_repo_context_local_root.return_value = str(repo)
+    git_provider.get_diff_files.return_value = [
+        SimpleNamespace(
+            filename="core/common.js",
+            head_file=(repo / "core" / "common.js").read_text(),
+            patch="\n".join(
+                [
+                    "@@ -1,7 +1,7 @@",
+                    " const Common = {",
+                    "   db_delete: async function(table, data) {",
+                    "+    if (!Array.isArray(data) || data.length === 0) {",
+                    "+      throw new Error('blocked');",
+                    "     }",
+                    "     return data;",
+                ]
+            ),
+        )
+    ]
+    reviewer = _make_reviewer(git_provider)
+
+    try:
+        bundle = reviewer._build_repo_context_bundle()
+    finally:
+        settings.repo_context.clear()
+        settings.repo_context.update(original)
+
+    assert bundle.status == "ok"
+    assert "routes/users.js" in reviewer.vars["repo_context"]
+    assert "Common.db_delete('users', { id })" in reviewer.vars["repo_context"]
+
+
 def test_build_repo_context_passes_external_repo_config_to_workspace_manager(monkeypatch):
     settings = get_settings()
     original = dict(settings.repo_context)
