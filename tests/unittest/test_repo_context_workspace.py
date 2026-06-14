@@ -1,4 +1,5 @@
 import os
+import base64
 import subprocess
 from pathlib import Path
 
@@ -109,6 +110,8 @@ def test_sanitize_repo_context_url_redacts_tokens_and_auth_headers():
         "https://***@github.com/org/repo.git"
     )
     assert provider.sanitize_repo_context_url("Authorization: Bearer ghs_secret") == "Authorization: Bearer ***"
+    assert provider.sanitize_repo_context_url("Authorization: Basic abc123") == "Authorization: Basic ***"
+    assert provider.sanitize_repo_context_url("Authorization: token ghs_secret") == "Authorization: token ***"
 
 
 def test_github_provider_repo_context_identity_checkout_spec_and_auth_header():
@@ -140,7 +143,8 @@ def test_github_provider_repo_context_identity_checkout_spec_and_auth_header():
         "pr_num": 7,
         "head_sha": "head-sha",
     }
-    assert provider.get_repo_context_auth_header() == "Authorization: token ghs_secret"
+    encoded = base64.b64encode(b"x-access-token:ghs_secret").decode()
+    assert provider.get_repo_context_auth_header() == f"Authorization: Basic {encoded}"
 
 
 def test_github_provider_repo_context_auth_header_prefers_bound_requester_auth():
@@ -153,7 +157,8 @@ def test_github_provider_repo_context_auth_header_prefers_bound_requester_auth()
     )()
     provider.github_client = type("Client", (), {"_Github__requester": requester})()
 
-    assert provider.get_repo_context_auth_header() == "Authorization: token fresh"
+    encoded = base64.b64encode(b"x-access-token:fresh").decode()
+    assert provider.get_repo_context_auth_header() == f"Authorization: Basic {encoded}"
 
 
 def test_local_session_uses_tracked_files_only(tmp_path, monkeypatch):

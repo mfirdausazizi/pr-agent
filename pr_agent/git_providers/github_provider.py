@@ -1,5 +1,6 @@
 import copy
 import difflib
+import base64
 import hashlib
 import itertools
 import re
@@ -789,13 +790,13 @@ class GithubProvider(GitProvider):
         auth = getattr(getattr(github_client, "_Github__requester", None), "auth", None) or getattr(self, "auth", None)
         try:
             token = getattr(auth, "token", None)
-            token_type = getattr(auth, "token_type", "token")
         except Exception as e:
             get_logger().warning("Failed to get GitHub repo context auth token", artifact={"error": str(e)})
             return None
         if not token:
             return None
-        return f"Authorization: {token_type} {token}"
+        encoded = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        return f"Authorization: Basic {encoded}"
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         if disable_eyes:

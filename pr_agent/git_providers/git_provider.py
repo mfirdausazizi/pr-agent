@@ -191,7 +191,13 @@ class GitProvider(ABC):
             return value
         sanitized = re.sub(r"(https?://)[^/@\s]+@", r"\1***@", value)
         sanitized = re.sub(r"(Authorization: \s*Bearer\s+)[^\s]+", r"\1***", sanitized, flags=re.IGNORECASE)
+        sanitized = re.sub(r"(Authorization: \s*Basic\s+)[^\s]+", r"\1***", sanitized, flags=re.IGNORECASE)
+        sanitized = re.sub(r"(Authorization: \s*token\s+)[^\s]+", r"\1***", sanitized, flags=re.IGNORECASE)
         sanitized = re.sub(r"(http\.extraHeader=Authorization:\s*Bearer\s+)[^\s]+", r"\1***", sanitized,
+                           flags=re.IGNORECASE)
+        sanitized = re.sub(r"(http\.extraHeader=Authorization:\s*Basic\s+)[^\s]+", r"\1***", sanitized,
+                           flags=re.IGNORECASE)
+        sanitized = re.sub(r"(http\.extraHeader=Authorization:\s*token\s+)[^\s]+", r"\1***", sanitized,
                            flags=re.IGNORECASE)
         return sanitized
 
