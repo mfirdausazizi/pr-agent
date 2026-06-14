@@ -45,6 +45,7 @@ __new hunk__
 - When quoting variables, names or file paths from the code, use backticks (`) instead of single quote (').
 - Note that you only see changed code segments (diff hunks in a PR), not the entire codebase. Avoid suggestions that might duplicate existing functionality or questioning code elements (like variables declarations or import statements) that may be defined elsewhere in the codebase.
 - Also note that if the code ends at an opening brace or statement that begins a new scope (like 'if', 'for', 'try'), don't treat it as incomplete. Instead, acknowledge the visible scope boundary and analyze only the code shown.
+- Related repository context, when provided, is supporting evidence only. Final findings must be introduced by the PR changes and anchored to changed primary PR lines, not to external context or unchanged files.
 
 Determining what to flag:
 - For clear bugs and security issues, be thorough. Do not skip a genuine problem just because the trigger scenario is narrow.
@@ -273,6 +274,15 @@ User answers:
 =====
 {%- endif %}
 
+
+{%- if repo_context_status == "ok" and repo_context %}
+--Related Repository Context--
+======
+{{ repo_context|trim }}
+======
+Use this context only as supporting evidence. Do not anchor findings to these files unless they are also changed primary PR lines in the PR code diff.
+
+{%- endif %}
 
 The PR code diff:
 ======
