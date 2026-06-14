@@ -130,6 +130,29 @@ def test_extracts_changed_javascript_and_typescript_symbols():
     assert by_name["typedArrow"].language == "typescript"
 
 
+def test_extracts_enclosing_javascript_function_for_body_change():
+    head_file = "\n".join(
+        [
+            "function db_delete(table, data) {",
+            "  let query = `DELETE FROM ${table}`;",
+            "  if (!Array.isArray(data)) {",
+            "    throw new Error('blocked');",
+            "  }",
+            "  return query;",
+            "}",
+        ]
+    )
+
+    symbols = extract_changed_symbols(
+        [_file("core/common.js", head_file=head_file)],
+        {"core/common.js": [_range("core/common.js", 3, 4)]},
+    )
+
+    by_name = _symbols_by_name(symbols)
+    assert by_name["db_delete"].kind == "function"
+    assert by_name["db_delete"].line_start == 1
+
+
 def test_extracts_fallback_identifiers_from_patch_when_head_file_missing():
     patch = "\n".join(
         [

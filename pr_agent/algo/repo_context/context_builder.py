@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from pr_agent.algo.repo_context.agent_planner import parse_planner_actions
+from pr_agent.algo.repo_context.symbol_extractor import extract_changed_symbols
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,21 @@ class RepoContextBuilder:
             return RepoContextBundle(status="unavailable", reason=str(exc))
 
     def _add_seed_context(self, bundle: RepoContextBundle, diff_files: list[Any], limit: int) -> None:
+        changed_symbols = self._extract_changed_symbols(diff_files, limit)
+        for symbol in changed_symbols:
+            self._extend_snippets(bundle, self.searcher.find_references(symbol, limit=limit), score=95)
+            symbol_path = _get(symbol, "path")
+            if symbol_path:
+                self._extend_snippets(bundle, self.searcher.find_importers(symbol_path, limit=limit), score=70)
+                self._extend_snippets(
+                    bundle,
+                    self.searcher.find_tests(symbol_path, limit=limit),
+                    score=80,
+                    context_type="verification",
+                )
+        if changed_symbols:
+            return
+
         for diff_file in diff_files:
             path = _get(diff_file, "path") or _get(diff_file, "filename") or _get(diff_file, "head_file")
             if not path:
@@ -79,6 +95,13 @@ class RepoContextBuilder:
                 score=80,
                 context_type="verification",
             )
+
+    @staticmethod
+    def _extract_changed_symbols(diff_files: list[Any], limit: int) -> list[Any]:
+        try:
+            return extract_changed_symbols(diff_files, max_symbols=limit)
+        except Exception:
+            return []
 
     def _run_agent_round(self, bundle: RepoContextBundle, round_index: int, limit: int) -> None:
         if not self.planner:

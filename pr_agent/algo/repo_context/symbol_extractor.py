@@ -211,6 +211,7 @@ def _extract_javascript_symbols(
     for changed_range in ranges:
         start = max(_line_start(changed_range), 1)
         end = min(_line_end(changed_range), len(lines))
+        found_for_range = False
         for line_number in range(start, end + 1):
             symbol = _symbol_from_javascript_line(
                 file_patch.filename,
@@ -220,7 +221,35 @@ def _extract_javascript_symbols(
             )
             if symbol:
                 symbols.append(symbol)
+                found_for_range = True
+        if not found_for_range:
+            symbol = _nearest_javascript_enclosing_symbol(
+                file_patch.filename,
+                lines,
+                start,
+                language,
+            )
+            if symbol:
+                symbols.append(symbol)
     return symbols
+
+
+def _nearest_javascript_enclosing_symbol(
+    path: str,
+    lines: list[str],
+    start_line: int,
+    language: str,
+) -> ChangedSymbol | None:
+    for line_number in range(min(start_line, len(lines)), 0, -1):
+        symbol = _symbol_from_javascript_line(
+            path,
+            lines[line_number - 1],
+            line_number,
+            language,
+        )
+        if symbol:
+            return symbol
+    return None
 
 
 def _symbol_from_javascript_line(

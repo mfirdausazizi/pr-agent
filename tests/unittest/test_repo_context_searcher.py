@@ -4,6 +4,7 @@ from pr_agent.algo.repo_context.context_builder import RepoContextBuilder
 from pr_agent.algo.repo_context.models import WorkspaceRepo
 from pr_agent.algo.repo_context.searcher import RepoContextSearcher, search_text
 from pr_agent.algo.repo_context.workspace import RepoWorkspaceManager
+from pr_agent.algo.types import FilePatchInfo
 
 
 def test_search_text_finds_matches_across_allowed_tracked_files(tmp_path):
@@ -96,3 +97,66 @@ def test_production_searcher_and_builder_find_db_delete_call_site(tmp_path):
     assert any(snippet.context_type == "verification" and snippet.path ==
                "tests/test_db.py" for snippet in bundle.snippets)
     assert not any(str(tmp_path) in snippet.path for snippet in bundle.snippets)
+
+
+def test_production_builder_finds_js_callers_for_changed_function_body(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "core").mkdir()
+    (repo / "routes").mkdir()
+    (repo / "core" / "common.js").write_text(
+        "function db_delete(table, data) {\n"
+        "  let query = `DELETE FROM ${table}`;\n"
+        "  if (!Array.isArray(data) || data.length === 0) {\n"
+        "    throw new Error('blocked');\n"
+        "  }\n"
+        "  return query;\n"
+        "}\n"
+        "module.exports = { db_delete };\n"
+    )
+    (repo / "routes" / "users.js").write_text(
+        "const { db_delete } = require('../core/common');\n"
+        "function removeUser(id) {\n"
+        "  return db_delete('users', { id });\n"
+        "}\n"
+    )
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True, text=True)
+
+    patch = "\n".join(
+        [
+            "@@ -1,6 +1,6 @@",
+            " function db_delete(table, data) {",
+            "   let query = `DELETE FROM ${table}`;",
+            "+  if (!Array.isArray(data) || data.length === 0) {",
+            "+    throw new Error('blocked');",
+            "   }",
+            "   return query;",
+        ]
+    )
+    diff_file = FilePatchInfo(
+        base_file="",
+        head_file=(repo / "core" / "common.js").read_text(),
+        patch=patch,
+        filename="core/common.js",
+    )
+    provider = type(
+        "Provider",
+        (),
+        {
+            "get_repo_context_local_root": lambda self: str(repo),
+            "get_repo_context_primary_checkout_spec": lambda self: None,
+        },
+    )()
+
+    with RepoWorkspaceManager().create_session(provider) as session:
+        searcher = RepoContextSearcher(session)
+        builder = RepoContextBuilder(workspace_session=session, searcher=searcher)
+        bundle = builder.build(diff_files=[diff_file], max_agent_rounds=0)
+
+    assert bundle.status == "ok"
+    assert any(
+        snippet.path == "routes/users.js" and "db_delete('users', { id })" in snippet.content
+        for snippet in bundle.snippets
+    )
+    assert not any(snippet.path.startswith(".coolify/") for snippet in bundle.snippets)
