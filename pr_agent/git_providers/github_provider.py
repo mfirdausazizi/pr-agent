@@ -785,10 +785,17 @@ class GithubProvider(GitProvider):
         }
 
     def get_repo_context_auth_header(self) -> str | None:
-        token = getattr(getattr(self, "auth", None), "token", None)
+        github_client = getattr(self, "github_client", None)
+        auth = getattr(getattr(github_client, "_Github__requester", None), "auth", None) or getattr(self, "auth", None)
+        try:
+            token = getattr(auth, "token", None)
+            token_type = getattr(auth, "token_type", "token")
+        except Exception as e:
+            get_logger().warning("Failed to get GitHub repo context auth token", artifact={"error": str(e)})
+            return None
         if not token:
             return None
-        return f"Authorization: Bearer {token}"
+        return f"Authorization: {token_type} {token}"
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         if disable_eyes:

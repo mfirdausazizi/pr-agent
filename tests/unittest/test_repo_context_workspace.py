@@ -116,7 +116,7 @@ def test_github_provider_repo_context_identity_checkout_spec_and_auth_header():
     provider.repo = "org/repo"
     provider.pr_num = 7
     provider.base_url_html = "https://github.com"
-    provider.auth = type("Auth", (), {"token": "ghs_secret"})()
+    provider.auth = type("Auth", (), {"token": "ghs_secret", "token_type": "token"})()
     provider.pr = type(
         "PullRequest",
         (),
@@ -140,7 +140,20 @@ def test_github_provider_repo_context_identity_checkout_spec_and_auth_header():
         "pr_num": 7,
         "head_sha": "head-sha",
     }
-    assert provider.get_repo_context_auth_header() == "Authorization: Bearer ghs_secret"
+    assert provider.get_repo_context_auth_header() == "Authorization: token ghs_secret"
+
+
+def test_github_provider_repo_context_auth_header_prefers_bound_requester_auth():
+    provider = object.__new__(GithubProvider)
+    provider.auth = type("Auth", (), {"token": "stale", "token_type": "token"})()
+    requester = type(
+        "Requester",
+        (),
+        {"auth": type("BoundAuth", (), {"token": "fresh", "token_type": "token"})()},
+    )()
+    provider.github_client = type("Client", (), {"_Github__requester": requester})()
+
+    assert provider.get_repo_context_auth_header() == "Authorization: token fresh"
 
 
 def test_local_session_uses_tracked_files_only(tmp_path, monkeypatch):
