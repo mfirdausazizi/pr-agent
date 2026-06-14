@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from pr_agent.algo.repo_context.context_builder import RepoContextBundle, RepoContextSnippet
 from pr_agent.algo.repo_context.prompt_formatter import format_repo_context, reserve_diff_tokens
 
@@ -98,5 +100,72 @@ def test_formatter_can_exclude_external_context():
     assert "external context" not in text
 
 
+def test_formatter_includes_call_site_audit_summary():
+    bundle = RepoContextBundle(
+        status="ok",
+        snippets=[
+            RepoContextSnippet(
+                "primary",
+                "primary",
+                "routes/admin.js",
+                10,
+                12,
+                "await Common.db_delete('teams', [{ id }]);\nawait Common.db_delete('users', [{ id }]);",
+                score=100,
+            ),
+            RepoContextSnippet(
+                "primary",
+                "primary",
+                "routes/rest-api.js",
+                20,
+                20,
+                "await Common.db_delete('chats', [{ id }]);",
+                score=95,
+            ),
+        ],
+    )
+
+    text, status = format_repo_context(bundle, WordTokenHandler(), max_tokens=120)
+
+    assert status == "ok"
+    assert "Repository context audit summary:" in text
+    assert "Available snippets show `db_delete` references in 2 files" in text
+    assert "`routes/admin.js` (2)" in text
+    assert "`routes/rest-api.js` (1)" in text
+
+
+def test_formatter_labels_audit_summary_as_sample_when_context_is_clipped():
+    bundle = RepoContextBundle(
+        status="ok",
+        snippets=[
+            RepoContextSnippet("primary", "primary", "routes/admin.js", 1, 1, "await Common.db_delete('teams');", 100),
+            RepoContextSnippet(
+                "primary", "primary", "routes/rest-api.js", 1, 1, "await Common.db_delete('chats');", 95
+            ),
+            RepoContextSnippet("primary", "primary", "routes/tenant.js", 1, 1, "await Common.db_delete('tenant');", 90),
+        ],
+    )
+
+    text, status = format_repo_context(bundle, WordTokenHandler(), max_tokens=24)
+
+    assert status == "partial"
+    assert "Repo context sample shows" in text
+    assert "sampled/partial" in text
+
+
 def test_reserve_diff_tokens_preserves_minimum_reserved_budget():
     assert reserve_diff_tokens(total_tokens=100, requested_context_tokens=90, min_diff_tokens_reserved=25) == 75
+
+
+def test_reviewer_prompts_instruct_models_to_use_repo_context_audit_evidence():
+    repo_root = Path(__file__).parents[2]
+    prompt_paths = [
+        repo_root / "pr_agent" / "settings" / "pr_reviewer_prompts.toml",
+        repo_root / "pr_agent" / "settings" / "pr_reviewer_consolidate_prompts.toml",
+    ]
+
+    for prompt_path in prompt_paths:
+        prompt = prompt_path.read_text()
+        assert "audited call-site evidence" in prompt
+        assert 'phrase uncertainty as "repo context sample shows..."' in prompt
+        assert 'Never say "not visible from diff alone" when a Related Repository Context section is present' in prompt

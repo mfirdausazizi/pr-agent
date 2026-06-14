@@ -1,3 +1,4 @@
+import re
 from pathlib import PurePosixPath
 
 from pr_agent.algo.repo_context.context_builder import RepoContextBundle, RepoContextSnippet
@@ -18,13 +19,12 @@ def format_repo_context(
 
     snippets = [snippet for snippet in bundle.snippets if include_external or _is_primary(snippet)]
     selected, clipped = _select_snippets(snippets, token_handler, max_tokens)
-    lines = ["Repository context:"]
-    for snippet in selected:
-        lines.append(f"\n[{snippet.repo_label}] {_safe_path(snippet.path)}:{snippet.start}-{snippet.end}")
-        lines.append("```")
-        lines.append(snippet.content)
-        lines.append("```")
-    text = "\n".join(lines)
+    audit_summary = _format_audit_summary(snippets if clipped else selected, clipped)
+    while selected and _count_tokens(_render(selected, audit_summary), token_handler) > max_tokens:
+        clipped = True
+        audit_summary = _format_audit_summary(snippets, clipped)
+        selected.pop()
+    text = _render(selected, audit_summary)
     return text, "partial" if clipped else "ok"
 
 
@@ -83,8 +83,10 @@ def _clip_content(
     return None
 
 
-def _render(snippets: list[RepoContextSnippet]) -> str:
+def _render(snippets: list[RepoContextSnippet], audit_summary: str | None = None) -> str:
     lines = ["Repository context:"]
+    if audit_summary:
+        lines.append(audit_summary)
     for snippet in snippets:
         lines.append(f"\n[{snippet.repo_label}] {_safe_path(snippet.path)}:{snippet.start}-{snippet.end}")
         lines.append("```")
@@ -99,6 +101,59 @@ def _count_tokens(text: str, token_handler) -> int:
 
 def _is_primary(snippet: RepoContextSnippet) -> bool:
     return snippet.repo == "primary" or snippet.repo_label == "primary"
+
+
+def _format_audit_summary(snippets: list[RepoContextSnippet], clipped: bool) -> str:
+    call_counts: dict[str, dict[str, int]] = {}
+    ignored_names = {
+        "if",
+        "for",
+        "while",
+        "switch",
+        "catch",
+        "function",
+        "return",
+        "require",
+        "describe",
+        "it",
+        "test",
+    }
+    for snippet in snippets:
+        if snippet.context_type == "verification":
+            continue
+        safe_path = _safe_path(snippet.path)
+        for name in re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", snippet.content):
+            if name in ignored_names:
+                continue
+            path_counts = call_counts.setdefault(name, {})
+            path_counts[safe_path] = path_counts.get(safe_path, 0) + 1
+
+    summaries = []
+    for name, path_counts in sorted(
+        call_counts.items(),
+        key=lambda item: (-sum(item[1].values()), item[0]),
+    ):
+        if sum(path_counts.values()) < 2 or len(path_counts) < 2:
+            continue
+        path_summary = ", ".join(
+            f"`{path}` ({count})" for path, count in sorted(path_counts.items(), key=lambda item: (-item[1], item[0]))
+        )
+        if clipped:
+            summaries.append(
+                f"- Repo context sample shows `{name}` references in {len(path_counts)} files "
+                f"({sum(path_counts.values())} selected occurrences, sampled/partial): {path_summary}."
+            )
+        else:
+            summaries.append(
+                f"- Available snippets show `{name}` references in {len(path_counts)} files "
+                f"({sum(path_counts.values())} selected occurrences): {path_summary}. "
+                "This is evidence from selected snippets, not an exhaustive whole-repo audit."
+            )
+        if len(summaries) >= 3:
+            break
+    if not summaries:
+        return ""
+    return "\nRepository context audit summary:\n" + "\n".join(summaries)
 
 
 def _safe_path(path: str) -> str:

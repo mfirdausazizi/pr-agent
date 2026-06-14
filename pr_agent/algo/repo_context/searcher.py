@@ -109,7 +109,7 @@ class RepoContextSearcher:
         name = self._symbol_name(symbol)
         if not name:
             return []
-        snippets = self.search_text(name, limit=max(limit * 4, limit))
+        snippets = self.search_text(name, limit=max(limit * 10, limit, 50))
         symbol_path = _symbol_path(symbol)
         ranked = sorted(
             snippets,
@@ -121,7 +121,9 @@ class RepoContextSearcher:
             ),
         )
         non_test_ranked = [snippet for snippet in ranked if not self._looks_like_test_path(snippet.path)]
-        return (non_test_ranked or ranked)[:limit]
+        candidates = non_test_ranked or ranked
+        other_path_candidates = [snippet for snippet in candidates if snippet.path != symbol_path]
+        return self._diversify_by_path(other_path_candidates or candidates, limit)
 
     def find_importers(self, symbol, limit=5):
         path = symbol.get("path") if isinstance(symbol, dict) else str(symbol or "")
@@ -241,6 +243,36 @@ class RepoContextSearcher:
         if re.search(rf"\b{re.escape(name)}\b", content):
             return 2
         return 1
+
+    @staticmethod
+    def _diversify_by_path(snippets: list[RepoContextSnippet], limit: int) -> list[RepoContextSnippet]:
+        if limit <= 0:
+            return []
+        by_path: dict[str, list[RepoContextSnippet]] = {}
+        path_order = []
+        for snippet in snippets:
+            if snippet.path not in by_path:
+                by_path[snippet.path] = []
+                path_order.append(snippet.path)
+            by_path[snippet.path].append(snippet)
+
+        selected = []
+        while len(selected) < limit and by_path:
+            progressed = False
+            for path in list(path_order):
+                path_snippets = by_path.get(path)
+                if not path_snippets:
+                    continue
+                selected.append(path_snippets.pop(0))
+                progressed = True
+                if not path_snippets:
+                    del by_path[path]
+                    path_order.remove(path)
+                if len(selected) >= limit:
+                    break
+            if not progressed:
+                break
+        return selected
 
 
 def _symbol_path(symbol) -> str:

@@ -195,6 +195,37 @@ def test_reference_search_prioritizes_call_sites_over_definition(tmp_path):
     assert any(snippet.path == "routes/rest-api.js" for snippet in snippets)
 
 
+def test_reference_search_diversifies_call_sites_across_files(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "core").mkdir()
+    (repo / "routes").mkdir()
+    (repo / "tests").mkdir()
+    (repo / "core" / "common.js").write_text("async function db_delete(table, data) { return data; }\n")
+    (repo / "routes" / "admin.js").write_text(
+        "\n".join(f"await Common.db_delete('admin_{index}', [id]);" for index in range(8)) + "\n"
+    )
+    (repo / "routes" / "rest-api.js").write_text("await Common.db_delete('rest', [id]);\n")
+    (repo / "routes" / "tenant.js").write_text("await Common.db_delete('tenant', [id]);\n")
+    (repo / "tests" / "test_common.js").write_text("await Common.db_delete('test', [id]);\n")
+
+    snippets = RepoContextSearcher(
+        SimpleSession([WorkspaceRepo("primary", repo, {
+            "core/common.js",
+            "routes/admin.js",
+            "routes/rest-api.js",
+            "routes/tenant.js",
+            "tests/test_common.js",
+        })])
+    ).find_references({"name": "db_delete", "path": "core/common.js"}, limit=5)
+
+    paths = [snippet.path for snippet in snippets]
+    assert "routes/rest-api.js" in paths
+    assert "routes/tenant.js" in paths
+    assert "tests/test_common.js" not in paths
+    assert len(set(paths)) >= 3
+
+
 class SimpleSession:
     def __init__(self, repos):
         self.repos = repos
