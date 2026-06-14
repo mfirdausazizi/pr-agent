@@ -1,4 +1,5 @@
 from pr_agent.algo.repo_context.context_builder import RepoContextBuilder
+from pr_agent.algo.types import FilePatchInfo
 
 
 class FakeSession:
@@ -61,6 +62,34 @@ def test_builder_deterministic_seed_includes_db_delete_caller_snippet():
     assert any(snippet.path == "app/service.py" and "db_delete(user_id)" in snippet.content for snippet in bundle.snippets)  # noqa: E501
     assert any(snippet.context_type == "verification" and snippet.path ==
                "tests/test_db.py" for snippet in bundle.snippets)
+
+
+def test_builder_expands_reference_limit_for_changed_symbols():
+    class CapturingSearcher(FakeSearcher):
+        def __init__(self):
+            self.reference_limits = []
+
+        def find_references(self, symbol, limit=5):
+            self.reference_limits.append(limit)
+            return super().find_references(symbol, limit=limit)
+
+    searcher = CapturingSearcher()
+    builder = RepoContextBuilder(workspace_session=FakeSession(), searcher=searcher)
+
+    builder.build(
+        diff_files=[
+            FilePatchInfo(
+                base_file="",
+                head_file="def db_delete(user_id):\n    return client.delete(user_id)\n",
+                patch="@@ -1,2 +1,2 @@\n def db_delete(user_id):\n+    return client.delete(user_id)\n",
+                filename="app/db.py",
+            )
+        ],
+        max_agent_rounds=0,
+        max_queries_per_round=5,
+    )
+
+    assert searcher.reference_limits == [10]
 
 
 class FailingSearcher(FakeSearcher):

@@ -64,7 +64,8 @@ class RepoContextBuilder:
     def _add_seed_context(self, bundle: RepoContextBundle, diff_files: list[Any], limit: int) -> None:
         changed_symbols = self._extract_changed_symbols(diff_files, limit)
         for symbol in changed_symbols:
-            self._extend_snippets(bundle, self.searcher.find_references(symbol, limit=limit), score=95)
+            reference_limit = max(limit * 2, 10)
+            self._extend_snippets(bundle, self.searcher.find_references(symbol, limit=reference_limit), score=95)
             symbol_path = _get(symbol, "path")
             if symbol_path:
                 self._extend_snippets(bundle, self.searcher.find_importers(symbol_path, limit=limit), score=70)
