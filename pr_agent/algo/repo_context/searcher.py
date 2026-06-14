@@ -109,7 +109,19 @@ class RepoContextSearcher:
         name = self._symbol_name(symbol)
         if not name:
             return []
-        return self.search_text(name, limit=limit)
+        snippets = self.search_text(name, limit=max(limit * 4, limit))
+        symbol_path = _symbol_path(symbol)
+        ranked = sorted(
+            snippets,
+            key=lambda snippet: (
+                snippet.path == symbol_path,
+                -self._reference_score(name, snippet.content),
+                snippet.path,
+                snippet.start_line,
+            ),
+        )
+        non_test_ranked = [snippet for snippet in ranked if not self._looks_like_test_path(snippet.path)]
+        return (non_test_ranked or ranked)[:limit]
 
     def find_importers(self, symbol, limit=5):
         path = symbol.get("path") if isinstance(symbol, dict) else str(symbol or "")
@@ -221,6 +233,20 @@ class RepoContextSearcher:
         parts = Path(path).parts
         name = Path(path).name
         return "tests" in parts or name.startswith("test_") or name.endswith("_test.py")
+
+    @staticmethod
+    def _reference_score(name: str, content: str) -> int:
+        if re.search(rf"(?:\.|\b){re.escape(name)}\s*\(", content):
+            return 3
+        if re.search(rf"\b{re.escape(name)}\b", content):
+            return 2
+        return 1
+
+
+def _symbol_path(symbol) -> str:
+    if isinstance(symbol, dict):
+        return symbol.get("path") or ""
+    return getattr(symbol, "path", "")
 
 
 RepositorySearcher = RepoContextSearcher

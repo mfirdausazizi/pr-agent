@@ -160,3 +160,41 @@ def test_production_builder_finds_js_callers_for_changed_function_body(tmp_path)
         for snippet in bundle.snippets
     )
     assert not any(snippet.path.startswith(".coolify/") for snippet in bundle.snippets)
+
+
+def test_reference_search_prioritizes_call_sites_over_definition(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "core").mkdir()
+    (repo / "routes").mkdir()
+    (repo / "core" / "common.js").write_text(
+        "const Common = {\n"
+        "  db_delete: async function(table, data) {\n"
+        "    return data;\n"
+        "  }\n"
+        "};\n"
+    )
+    (repo / "routes" / "admin.js").write_text(
+        "await Common.db_delete('teams', [{ id }]);\n"
+        "await Common.db_delete('users', [{ id }]);\n"
+    )
+    (repo / "routes" / "rest-api.js").write_text(
+        "await Common.db_delete('chats', [{ id }]);\n"
+        "await Common.db_delete('messages', [{ id }]);\n"
+    )
+
+    snippets = RepoContextSearcher(
+        SimpleSession([WorkspaceRepo("primary", repo, {
+            "core/common.js",
+            "routes/admin.js",
+            "routes/rest-api.js",
+        })])
+    ).find_references({"name": "db_delete", "path": "core/common.js"}, limit=3)
+
+    assert all(snippet.path != "core/common.js" for snippet in snippets)
+    assert any(snippet.path == "routes/rest-api.js" for snippet in snippets)
+
+
+class SimpleSession:
+    def __init__(self, repos):
+        self.repos = repos
