@@ -339,3 +339,17 @@ def test_reviewer_prompts_instruct_models_to_use_repo_context_audit_evidence():
         assert "only snippets are available" in prompt
         assert 'phrase uncertainty as "repo context sample shows..."' in prompt
         assert 'Never say "not visible from diff alone" when a Related Repository Context section is present' in prompt
+        assert "Do not assert library- or driver-specific runtime behavior" in prompt
+        assert "purely hypothetical future-caller variants as non-blocking hardening suggestions" in prompt
+        assert "structured inputs such as arrays, objects, SQL conditions, filters, or query builders" in prompt
+        assert "inspect visible/current callers and repo-context audit evidence for element shape validation" in prompt
+        assert "current code path can pass malformed or untrusted elements" in prompt
+        assert "optional defensive hardening or regression-test advice" in prompt
+        assert "A residual hardening opportunity that no current code path can trigger" in prompt
+        assert "Evaluate changed surfaces across behavior/contracts, cross-repo/deploy coupling" in prompt
+        assert "Do not claim deploy readiness or production compatibility" in prompt
+        assert "operational verification is outside provided evidence" in prompt
+        assert "This does not change code-quality scoring" in prompt
+        assert "Escalate high-severity blockers only with a concrete current trigger or call site" in prompt
+        assert "Performance findings require a specific optimization recommendation" in prompt
+        assert "Cross-repo/deploy-order findings require a concrete contract/env/schema/migration mismatch" in prompt
