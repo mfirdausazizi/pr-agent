@@ -269,6 +269,65 @@ def test_reference_audit_counts_all_tracked_allowed_files_beyond_snippet_limits(
     assert str(tmp_path) not in snippet.content
 
 
+def test_reference_audit_reports_all_detected_call_sites_pass_arrays(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "core").mkdir()
+    (repo / "routes").mkdir()
+    (repo / "core" / "common.js").write_text(
+        "async function db_delete(table, data) { return data; }\n"
+        "const helpers = { db_delete: async function(table, data) { return data; } };\n"
+    )
+    (repo / "routes" / "admin.js").write_text(
+        "await Common.db_delete('admin', [id, { hardDelete: true }]);\n"
+        "await db_delete('tenant', [tenantId]);\n"
+    )
+    (repo / "routes" / "rest-api.js").write_text("return Common.db_delete('rest', [restId]);\n")
+
+    snippet = RepoContextSearcher(
+        SimpleSession([WorkspaceRepo("primary", repo, {
+            "core/common.js",
+            "routes/admin.js",
+            "routes/rest-api.js",
+        })])
+    ).find_reference_audit({"name": "db_delete", "path": "core/common.js"})
+
+    assert snippet is not None
+    assert "Call argument shape audit: 3 array-form calls, 0 object-form calls, 0 missing/other calls, 0 unknown." in (
+        snippet.content
+    )
+    assert "All detected call sites pass an array as the second argument." in snippet.content
+
+
+def test_reference_audit_reports_bad_and_unknown_call_argument_shapes(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "routes").mkdir()
+    (repo / "routes" / "object.js").write_text("await Common.db_delete('object', { id });\n")
+    (repo / "routes" / "missing.js").write_text("await db_delete('missing');\n")
+    (repo / "routes" / "other.js").write_text("await Common.db_delete('other', id);\n")
+    (repo / "routes" / "unknown.js").write_text("await Common.db_delete('unknown',\n    [id]);\n")
+
+    snippet = RepoContextSearcher(
+        SimpleSession([WorkspaceRepo("primary", repo, {
+            "routes/missing.js",
+            "routes/object.js",
+            "routes/other.js",
+            "routes/unknown.js",
+        })])
+    ).find_reference_audit("db_delete")
+
+    assert snippet is not None
+    assert "Call argument shape audit: 0 array-form calls, 1 object-form calls, 2 missing/other calls, 1 unknown." in (
+        snippet.content
+    )
+    assert "All detected call sites pass an array as the second argument." not in snippet.content
+    assert "object: routes/object.js:1" in snippet.content
+    assert "missing: routes/missing.js:1" in snippet.content
+    assert "other: routes/other.js:1" in snippet.content
+    assert "unknown: routes/unknown.js:1" in snippet.content
+
+
 def test_reference_audit_marks_partial_when_file_cap_stops_scan(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()

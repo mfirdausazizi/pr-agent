@@ -134,6 +134,8 @@ class RepoContextSearcher:
         files_scanned = 0
         total_references = 0
         counts_by_path: dict[tuple[str, str], int] = {}
+        call_shape_counts = {"array": 0, "object": 0, "missing": 0, "other": 0, "unknown": 0}
+        call_shape_examples: dict[str, list[str]] = {"object": [], "missing": [], "other": [], "unknown": []}
         partial_reasons = []
         max_occurrences = self.settings.get("max_reference_audit_occurrences", 50000)
 
@@ -142,12 +144,26 @@ class RepoContextSearcher:
                 if files_scanned >= self.max_files_scanned:
                     partial_reasons.append("max_files_scanned reached")
                     return self._reference_audit_snippet(
-                        name, files_scanned, total_references, counts_by_path, partial_reasons, limit
+                        name,
+                        files_scanned,
+                        total_references,
+                        counts_by_path,
+                        call_shape_counts,
+                        call_shape_examples,
+                        partial_reasons,
+                        limit,
                     )
                 if time.monotonic() - start_time > self.timeout_sec:
                     partial_reasons.append("timeout reached")
                     return self._reference_audit_snippet(
-                        name, files_scanned, total_references, counts_by_path, partial_reasons, limit
+                        name,
+                        files_scanned,
+                        total_references,
+                        counts_by_path,
+                        call_shape_counts,
+                        call_shape_examples,
+                        partial_reasons,
+                        limit,
                     )
                 if not _is_included(rel_path, self.include_globs) or _matches_any(rel_path, self.exclude_globs):
                     continue
@@ -169,14 +185,31 @@ class RepoContextSearcher:
                     continue
                 counts_by_path[(repo.name, rel_path)] = reference_count
                 total_references += reference_count
+                self._audit_call_argument_shapes(
+                    name, text, rel_path, call_shape_counts, call_shape_examples
+                )
                 if total_references >= max_occurrences:
                     partial_reasons.append("occurrence cap reached")
                     return self._reference_audit_snippet(
-                        name, files_scanned, total_references, counts_by_path, partial_reasons, limit
+                        name,
+                        files_scanned,
+                        total_references,
+                        counts_by_path,
+                        call_shape_counts,
+                        call_shape_examples,
+                        partial_reasons,
+                        limit,
                     )
 
         return self._reference_audit_snippet(
-            name, files_scanned, total_references, counts_by_path, partial_reasons, limit
+            name,
+            files_scanned,
+            total_references,
+            counts_by_path,
+            call_shape_counts,
+            call_shape_examples,
+            partial_reasons,
+            limit,
         )
 
     def find_importers(self, symbol, limit=5):
@@ -303,12 +336,126 @@ class RepoContextSearcher:
     def _exact_reference_count(name: str, content: str) -> int:
         return len(re.findall(rf"\b{re.escape(name)}\b", content))
 
+    @classmethod
+    def _audit_call_argument_shapes(
+        cls,
+        name: str,
+        content: str,
+        path: str,
+        call_shape_counts: dict[str, int],
+        call_shape_examples: dict[str, list[str]],
+    ) -> None:
+        call_pattern = re.compile(rf"(?<![A-Za-z0-9_$])(?:[A-Za-z_$][A-Za-z0-9_$]*\.)?{re.escape(name)}\s*\(")
+        for line_number, line in enumerate(content.splitlines(), start=1):
+            if name not in line or cls._is_definition_line(name, line):
+                continue
+            for match in call_pattern.finditer(line):
+                shape = cls._classify_second_argument(line, match.end() - 1)
+                call_shape_counts[shape] += 1
+                if shape != "array" and len(call_shape_examples[shape]) < 5:
+                    call_shape_examples[shape].append(f"{path}:{line_number}")
+
+    @staticmethod
+    def _is_definition_line(name: str, line: str) -> bool:
+        escaped_name = re.escape(name)
+        return bool(
+            re.search(rf"\bfunction\s+{escaped_name}\s*\(", line)
+            or re.search(rf"\b{escaped_name}\s*:\s*(?:async\s+)?function\s*\(", line)
+        )
+
+    @classmethod
+    def _classify_second_argument(cls, line: str, open_paren_index: int) -> str:
+        args_text = cls._extract_single_line_arguments(line, open_paren_index)
+        if args_text is None:
+            return "unknown"
+        args = cls._split_top_level_arguments(args_text)
+        if args is None:
+            return "unknown"
+        if len(args) < 2:
+            return "missing"
+        second_arg = args[1].lstrip()
+        if not second_arg:
+            return "other"
+        if second_arg.startswith("["):
+            return "array"
+        if second_arg.startswith("{"):
+            return "object"
+        return "other"
+
+    @staticmethod
+    def _extract_single_line_arguments(line: str, open_paren_index: int) -> str | None:
+        depth = 0
+        quote = ""
+        escaped = False
+        for index in range(open_paren_index, len(line)):
+            char = line[index]
+            if quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = ""
+                continue
+            if char in {"'", '"', "`"}:
+                quote = char
+                continue
+            if char in "([{":
+                depth += 1
+                continue
+            if char in ")]}":
+                depth -= 1
+                if depth == 0 and char == ")":
+                    return line[open_paren_index + 1:index]
+                if depth < 0:
+                    return None
+        return None
+
+    @staticmethod
+    def _split_top_level_arguments(args_text: str) -> list[str] | None:
+        args = []
+        start = 0
+        depth = 0
+        quote = ""
+        escaped = False
+        for index, char in enumerate(args_text):
+            if quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = ""
+                continue
+            if char in {"'", '"', "`"}:
+                quote = char
+                continue
+            if char in "([{":
+                depth += 1
+                continue
+            if char in ")]}":
+                depth -= 1
+                if depth < 0:
+                    return None
+                continue
+            if char == "," and depth == 0:
+                args.append(args_text[start:index].strip())
+                start = index + 1
+        if quote or depth != 0:
+            return None
+        trailing = args_text[start:].strip()
+        if trailing or args_text.strip():
+            args.append(trailing)
+        return args
+
     @staticmethod
     def _reference_audit_snippet(
         name: str,
         files_scanned: int,
         total_references: int,
         counts_by_path: dict[tuple[str, str], int],
+        call_shape_counts: dict[str, int],
+        call_shape_examples: dict[str, list[str]],
         partial_reasons: list[str],
         limit: int,
     ) -> RepoContextSnippet:
@@ -328,6 +475,11 @@ class RepoContextSearcher:
             f"Scanned {files_scanned} files. Found {total_references} references across {len(path_counts)} files: "
             f"{path_summary}."
         )
+        call_shape_summary = RepoContextSearcher._call_shape_summary(
+            call_shape_counts, call_shape_examples, completed
+        )
+        if call_shape_summary:
+            content = f"{content} {call_shape_summary}"
         return RepoContextSnippet(
             repo_name="primary",
             path="repo-context-audit",
@@ -340,6 +492,38 @@ class RepoContextSearcher:
             score=1000,
             context_type="audit",
         )
+
+    @staticmethod
+    def _call_shape_summary(
+        call_shape_counts: dict[str, int],
+        call_shape_examples: dict[str, list[str]],
+        completed: bool,
+    ) -> str:
+        total_calls = sum(call_shape_counts.values())
+        if total_calls == 0:
+            return ""
+
+        missing_other_count = call_shape_counts["missing"] + call_shape_counts["other"]
+        summary = (
+            f"Call argument shape audit: {call_shape_counts['array']} array-form calls, "
+            f"{call_shape_counts['object']} object-form calls, {missing_other_count} missing/other calls, "
+            f"{call_shape_counts['unknown']} unknown."
+        )
+        if completed and not (
+            call_shape_counts["object"]
+            or call_shape_counts["missing"]
+            or call_shape_counts["other"]
+            or call_shape_counts["unknown"]
+        ):
+            return f"{summary} All detected call sites pass an array as the second argument."
+
+        examples = []
+        for shape in ("object", "missing", "other", "unknown"):
+            if call_shape_examples[shape]:
+                examples.append(f"{shape}: {', '.join(call_shape_examples[shape])}")
+        if examples:
+            return f"{summary} Non-array or unknown examples: {'; '.join(examples)}."
+        return summary
 
     @staticmethod
     def _diversify_by_path(snippets: list[RepoContextSnippet], limit: int) -> list[RepoContextSnippet]:
