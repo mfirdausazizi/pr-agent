@@ -153,6 +153,69 @@ def test_formatter_labels_audit_summary_as_sample_when_context_is_clipped():
     assert "sampled/partial" in text
 
 
+def test_formatter_uses_completed_audit_wording_when_exact_audit_is_clipped():
+    bundle = RepoContextBundle(
+        status="ok",
+        snippets=[
+            RepoContextSnippet(
+                "primary",
+                "primary",
+                "repo-context-audit",
+                1,
+                1,
+                "Exact reference audit for db_delete: completed scan of tracked, non-excluded files. "
+                "Call argument shape audit: All detected call sites pass an array as the second argument.",
+                score=1000,
+                context_type="audit",
+            ),
+            RepoContextSnippet(
+                "primary",
+                "primary",
+                "routes/admin.js",
+                1,
+                1,
+                "await Common.db_delete('teams', [{ id }]);",
+                score=100,
+            ),
+            RepoContextSnippet(
+                "primary",
+                "primary",
+                "routes/rest-api.js",
+                1,
+                1,
+                "await Common.db_delete('chats', [{ id }]);",
+                score=95,
+            ),
+            RepoContextSnippet(
+                "primary",
+                "primary",
+                "routes/tenant.js",
+                1,
+                1,
+                "await Common.db_delete('tenant', [{ id }]);",
+                score=90,
+            ),
+            RepoContextSnippet(
+                "external",
+                "shared-lib",
+                "lib/large.js",
+                1,
+                1,
+                " ".join(["external context"] * 80),
+                score=10,
+            ),
+        ],
+    )
+
+    text, status = format_repo_context(bundle, WordTokenHandler(), max_tokens=80)
+
+    assert status == "partial"
+    assert "Exact reference audit for db_delete" in text
+    assert "Completed repo-context audit found `db_delete` references" in text
+    assert "Repo context sample shows `db_delete`" not in text
+    assert "not an exhaustive whole-repo audit" not in text
+
+
 def test_formatter_preserves_exact_reference_audit_under_budget():
     bundle = RepoContextBundle(
         status="ok",
@@ -212,5 +275,7 @@ def test_reviewer_prompts_instruct_models_to_use_repo_context_audit_evidence():
         prompt = prompt_path.read_text()
         assert '"Exact reference audit..." evidence' in prompt
         assert "whole-repo tracked-file reference evidence" in prompt
+        assert "completed exact audit remains whole-repo tracked-file evidence even when context is clipped" in prompt
+        assert "only snippets are available" in prompt
         assert 'phrase uncertainty as "repo context sample shows..."' in prompt
         assert 'Never say "not visible from diff alone" when a Related Repository Context section is present' in prompt

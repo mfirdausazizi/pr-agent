@@ -106,6 +106,7 @@ def _is_primary(snippet: RepoContextSnippet) -> bool:
 
 def _format_audit_summary(snippets: list[RepoContextSnippet], clipped: bool) -> str:
     call_counts: dict[str, dict[str, int]] = {}
+    completed_exact_audits = _completed_exact_audit_symbols(snippets)
     ignored_names = {
         "if",
         "for",
@@ -139,7 +140,12 @@ def _format_audit_summary(snippets: list[RepoContextSnippet], clipped: bool) -> 
         path_summary = ", ".join(
             f"`{path}` ({count})" for path, count in sorted(path_counts.items(), key=lambda item: (-item[1], item[0]))
         )
-        if clipped:
+        if name in completed_exact_audits:
+            summaries.append(
+                f"- Completed repo-context audit found `{name}` references; selected call-site evidence appears in "
+                f"{len(path_counts)} files ({sum(path_counts.values())} selected occurrences): {path_summary}."
+            )
+        elif clipped:
             summaries.append(
                 f"- Repo context sample shows `{name}` references in {len(path_counts)} files "
                 f"({sum(path_counts.values())} selected occurrences, sampled/partial): {path_summary}."
@@ -155,6 +161,21 @@ def _format_audit_summary(snippets: list[RepoContextSnippet], clipped: bool) -> 
     if not summaries:
         return ""
     return "\nRepository context audit summary:\n" + "\n".join(summaries)
+
+
+def _completed_exact_audit_symbols(snippets: list[RepoContextSnippet]) -> set[str]:
+    completed_symbols = set()
+    for snippet in snippets:
+        if snippet.context_type != "audit":
+            continue
+        completed_symbols.update(
+            re.findall(
+                r"\bExact reference audit for ([A-Za-z_][A-Za-z0-9_]*): completed scan\b",
+                snippet.content,
+                flags=re.IGNORECASE,
+            )
+        )
+    return completed_symbols
 
 
 def _safe_path(path: str) -> str:
