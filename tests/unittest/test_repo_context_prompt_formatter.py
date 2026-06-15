@@ -2,6 +2,7 @@ from pathlib import Path
 
 from pr_agent.algo.repo_context.context_builder import RepoContextBundle, RepoContextSnippet
 from pr_agent.algo.repo_context.prompt_formatter import format_repo_context, reserve_diff_tokens
+from pr_agent.algo.repo_context.searcher import RepoContextSearcher
 
 
 class WordTokenHandler:
@@ -212,6 +213,65 @@ def test_formatter_uses_completed_audit_wording_when_exact_audit_is_clipped():
     assert status == "partial"
     assert "Exact reference audit for db_delete" in text
     assert "Completed repo-context audit found `db_delete` references" in text
+    assert "Repo context sample shows `db_delete`" not in text
+    assert "not an exhaustive whole-repo audit" not in text
+
+
+def test_formatter_detects_completed_audit_from_searcher_snippet_when_clipped():
+    audit_snippet = RepoContextSearcher._reference_audit_snippet(
+        name="db_delete",
+        files_scanned=3,
+        total_references=3,
+        counts_by_path={
+            ("primary", "routes/admin.js"): 2,
+            ("primary", "routes/rest-api.js"): 1,
+        },
+        call_shape_counts={"array": 3, "object": 0, "missing": 0, "other": 0, "unknown": 0},
+        call_shape_examples={},
+        partial_reasons=[],
+        limit=10,
+    )
+    bundle = RepoContextBundle(
+        status="ok",
+        snippets=[
+            audit_snippet,
+            RepoContextSnippet(
+                "primary",
+                "primary",
+                "routes/admin.js",
+                1,
+                2,
+                "await Common.db_delete('teams', [{ id }]);\nawait Common.db_delete('users', [{ id }]);",
+                score=100,
+            ),
+            RepoContextSnippet(
+                "primary",
+                "primary",
+                "routes/rest-api.js",
+                1,
+                1,
+                "await Common.db_delete('chats', [{ id }]);",
+                score=95,
+            ),
+            RepoContextSnippet(
+                "external",
+                "shared-lib",
+                "lib/large.js",
+                1,
+                1,
+                " ".join(["external context"] * 80),
+                score=10,
+            ),
+        ],
+    )
+
+    text, status = format_repo_context(bundle, WordTokenHandler(), max_tokens=130)
+
+    assert status == "partial"
+    assert "Exact reference audit for db_delete: completed scan" in text
+    assert "Completed repo-context audit found `db_delete` references" in text
+    assert "context occurrences" in text
+    assert "selected occurrences" not in text
     assert "Repo context sample shows `db_delete`" not in text
     assert "not an exhaustive whole-repo audit" not in text
 

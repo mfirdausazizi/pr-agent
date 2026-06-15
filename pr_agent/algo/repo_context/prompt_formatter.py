@@ -141,14 +141,21 @@ def _format_audit_summary(snippets: list[RepoContextSnippet], clipped: bool) -> 
             f"`{path}` ({count})" for path, count in sorted(path_counts.items(), key=lambda item: (-item[1], item[0]))
         )
         if name in completed_exact_audits:
-            summaries.append(
-                f"- Completed repo-context audit found `{name}` references; selected call-site evidence appears in "
-                f"{len(path_counts)} files ({sum(path_counts.values())} selected occurrences): {path_summary}."
-            )
+            if clipped:
+                summaries.append(
+                    f"- Completed repo-context audit found `{name}` references; context snippets include "
+                    f"call-site evidence in {len(path_counts)} files "
+                    f"({sum(path_counts.values())} context occurrences): {path_summary}."
+                )
+            else:
+                summaries.append(
+                    f"- Completed repo-context audit found `{name}` references; selected call-site evidence appears in "
+                    f"{len(path_counts)} files ({sum(path_counts.values())} selected occurrences): {path_summary}."
+                )
         elif clipped:
             summaries.append(
                 f"- Repo context sample shows `{name}` references in {len(path_counts)} files "
-                f"({sum(path_counts.values())} selected occurrences, sampled/partial): {path_summary}."
+                f"({sum(path_counts.values())} context occurrences, sampled/partial): {path_summary}."
             )
         else:
             summaries.append(
