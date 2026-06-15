@@ -65,6 +65,13 @@ class RepoContextBuilder:
         changed_symbols = self._extract_changed_symbols(diff_files, limit)
         for symbol in changed_symbols:
             reference_limit = max(limit * 2, 10)
+            if hasattr(self.searcher, "find_reference_audit"):
+                self._extend_snippets(
+                    bundle,
+                    [self.searcher.find_reference_audit(symbol, limit=reference_limit)],
+                    score=1000,
+                    context_type="audit",
+                )
             self._extend_snippets(bundle, self.searcher.find_references(symbol, limit=reference_limit), score=95)
             symbol_path = _get(symbol, "path")
             if symbol_path:
@@ -190,6 +197,7 @@ class RepoContextBuilder:
             deduped.values(),
             key=lambda item: (
                 item.repo != "primary" and item.repo_label != "primary",
+                item.context_type != "audit",
                 item.context_type != "verification",
                 -item.score,
                 item.path,

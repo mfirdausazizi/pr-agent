@@ -30,6 +30,11 @@ class RepoContextSnippet:
     reason: str = ""
     source: str = "deterministic"
     score: float = 0
+    context_type: str = ""
+
+    def __post_init__(self):
+        if not self.context_type:
+            self.context_type = "verification" if self.reason.startswith("test") else "context"
 
     @property
     def repo(self) -> str:
@@ -46,10 +51,6 @@ class RepoContextSnippet:
     @property
     def end(self) -> int:
         return self.end_line
-
-    @property
-    def context_type(self) -> str:
-        return "verification" if self.reason.startswith("test") else "context"
 
 
 @dataclass

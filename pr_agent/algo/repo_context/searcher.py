@@ -125,6 +125,60 @@ class RepoContextSearcher:
         other_path_candidates = [snippet for snippet in candidates if snippet.path != symbol_path]
         return self._diversify_by_path(other_path_candidates or candidates, limit)
 
+    def find_reference_audit(self, symbol, limit=20):
+        name = self._symbol_name(symbol)
+        if not name:
+            return None
+
+        start_time = time.monotonic()
+        files_scanned = 0
+        total_references = 0
+        counts_by_path: dict[tuple[str, str], int] = {}
+        partial_reasons = []
+        max_occurrences = self.settings.get("max_reference_audit_occurrences", 50000)
+
+        for repo in self._workspace_repos():
+            for rel_path in sorted(repo.tracked_files):
+                if files_scanned >= self.max_files_scanned:
+                    partial_reasons.append("max_files_scanned reached")
+                    return self._reference_audit_snippet(
+                        name, files_scanned, total_references, counts_by_path, partial_reasons, limit
+                    )
+                if time.monotonic() - start_time > self.timeout_sec:
+                    partial_reasons.append("timeout reached")
+                    return self._reference_audit_snippet(
+                        name, files_scanned, total_references, counts_by_path, partial_reasons, limit
+                    )
+                if not _is_included(rel_path, self.include_globs) or _matches_any(rel_path, self.exclude_globs):
+                    continue
+
+                files_scanned += 1
+                try:
+                    text = read_safe_text(
+                        repo.root,
+                        rel_path,
+                        repo.tracked_files,
+                        self.exclude_globs,
+                        self.max_file_bytes,
+                    )
+                except ValueError:
+                    continue
+
+                reference_count = self._exact_reference_count(name, text)
+                if reference_count <= 0:
+                    continue
+                counts_by_path[(repo.name, rel_path)] = reference_count
+                total_references += reference_count
+                if total_references >= max_occurrences:
+                    partial_reasons.append("occurrence cap reached")
+                    return self._reference_audit_snippet(
+                        name, files_scanned, total_references, counts_by_path, partial_reasons, limit
+                    )
+
+        return self._reference_audit_snippet(
+            name, files_scanned, total_references, counts_by_path, partial_reasons, limit
+        )
+
     def find_importers(self, symbol, limit=5):
         path = symbol.get("path") if isinstance(symbol, dict) else str(symbol or "")
         if not path:
@@ -162,6 +216,7 @@ class RepoContextSearcher:
                     continue
                 seen.add(key)
                 snippet.reason = f"test reference for {name}"
+                snippet.context_type = "verification"
                 snippets.append(snippet)
                 if len(snippets) >= limit:
                     return snippets
@@ -243,6 +298,48 @@ class RepoContextSearcher:
         if re.search(rf"\b{re.escape(name)}\b", content):
             return 2
         return 1
+
+    @staticmethod
+    def _exact_reference_count(name: str, content: str) -> int:
+        return len(re.findall(rf"\b{re.escape(name)}\b", content))
+
+    @staticmethod
+    def _reference_audit_snippet(
+        name: str,
+        files_scanned: int,
+        total_references: int,
+        counts_by_path: dict[tuple[str, str], int],
+        partial_reasons: list[str],
+        limit: int,
+    ) -> RepoContextSnippet:
+        completed = not partial_reasons
+        status = "completed scan" if completed else "partial scan"
+        reason_text = "" if completed else f" ({', '.join(dict.fromkeys(partial_reasons))})"
+        path_counts = sorted(counts_by_path.items(), key=lambda item: (-item[1], item[0][0], item[0][1]))
+        max_paths_reported = max(limit, 10)
+        path_summary = ", ".join(f"{path} ({count})" for (_repo_name, path), count in path_counts[:max_paths_reported])
+        if len(path_counts) > max_paths_reported:
+            path_summary = f"{path_summary}, ..."
+        if not path_summary:
+            path_summary = "none"
+
+        content = (
+            f"Exact reference audit for {name}: {status} of tracked, non-excluded files{reason_text}. "
+            f"Scanned {files_scanned} files. Found {total_references} references across {len(path_counts)} files: "
+            f"{path_summary}."
+        )
+        return RepoContextSnippet(
+            repo_name="primary",
+            path="repo-context-audit",
+            start_line=1,
+            end_line=1,
+            content=content,
+            symbol=name,
+            reason="exact reference audit",
+            source="deterministic",
+            score=1000,
+            context_type="audit",
+        )
 
     @staticmethod
     def _diversify_by_path(snippets: list[RepoContextSnippet], limit: int) -> list[RepoContextSnippet]:

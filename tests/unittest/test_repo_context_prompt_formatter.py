@@ -153,6 +153,50 @@ def test_formatter_labels_audit_summary_as_sample_when_context_is_clipped():
     assert "sampled/partial" in text
 
 
+def test_formatter_preserves_exact_reference_audit_under_budget():
+    bundle = RepoContextBundle(
+        status="ok",
+        snippets=[
+            RepoContextSnippet(
+                "primary",
+                "primary",
+                "repo-context-audit",
+                1,
+                1,
+                "Exact reference audit for db_delete: completed scan. Found 18 references.",
+                score=1000,
+                context_type="audit",
+            ),
+            RepoContextSnippet(
+                "primary",
+                "primary",
+                "tests/test_core.py",
+                1,
+                1,
+                "verification context that should yield to audit under budget pressure",
+                score=10,
+                context_type="verification",
+            ),
+            RepoContextSnippet(
+                "primary",
+                "primary",
+                "routes/admin.js",
+                1,
+                1,
+                "await Common.db_delete('teams');",
+                score=100,
+            ),
+        ],
+    )
+
+    text, status = format_repo_context(bundle, WordTokenHandler(), max_tokens=22)
+
+    assert status == "partial"
+    assert "Exact reference audit for db_delete" in text
+    assert "repo-context-audit:1-1" in text
+    assert "verification context that should yield" not in text
+
+
 def test_reserve_diff_tokens_preserves_minimum_reserved_budget():
     assert reserve_diff_tokens(total_tokens=100, requested_context_tokens=90, min_diff_tokens_reserved=25) == 75
 
@@ -166,6 +210,7 @@ def test_reviewer_prompts_instruct_models_to_use_repo_context_audit_evidence():
 
     for prompt_path in prompt_paths:
         prompt = prompt_path.read_text()
-        assert "audited call-site evidence" in prompt
+        assert '"Exact reference audit..." evidence' in prompt
+        assert "whole-repo tracked-file reference evidence" in prompt
         assert 'phrase uncertainty as "repo context sample shows..."' in prompt
         assert 'Never say "not visible from diff alone" when a Related Repository Context section is present' in prompt

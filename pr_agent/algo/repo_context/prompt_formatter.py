@@ -37,6 +37,7 @@ def _select_snippets(
         snippets,
         key=lambda snippet: (
             not _is_primary(snippet),
+            snippet.context_type != "audit",
             snippet.context_type != "verification",
             -snippet.score,
             snippet.path,
@@ -119,7 +120,7 @@ def _format_audit_summary(snippets: list[RepoContextSnippet], clipped: bool) -> 
         "test",
     }
     for snippet in snippets:
-        if snippet.context_type == "verification":
+        if snippet.context_type in {"audit", "verification"}:
             continue
         safe_path = _safe_path(snippet.path)
         for name in re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", snippet.content):

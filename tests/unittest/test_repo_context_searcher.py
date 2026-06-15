@@ -226,6 +226,67 @@ def test_reference_search_diversifies_call_sites_across_files(tmp_path):
     assert len(set(paths)) >= 3
 
 
+def test_reference_audit_counts_all_tracked_allowed_files_beyond_snippet_limits(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "core").mkdir()
+    (repo / "routes").mkdir()
+    (repo / "tests").mkdir()
+    (repo / "core" / "common.js").write_text("async function db_delete(table, data) { return data; }\n")
+    (repo / "routes" / "admin.js").write_text(
+        "\n".join(f"await Common.db_delete('admin_{index}', [id]);" for index in range(9)) + "\n"
+    )
+    (repo / "routes" / "rest-api.js").write_text(
+        "\n".join(f"await db_delete('rest_{index}', [id]);" for index in range(5)) + "\n"
+    )
+    (repo / "routes" / "tenant.js").write_text("await Common.db_delete('tenant', [id]);\n")
+    (repo / "tests" / "test_common.js").write_text("await Common.db_delete('test', [id]);\n")
+    (repo / ".secrets").write_text("db_delete should never be read\n")
+
+    snippet = RepoContextSearcher(
+        SimpleSession([WorkspaceRepo("primary", repo, {
+            ".secrets",
+            "core/common.js",
+            "routes/admin.js",
+            "routes/rest-api.js",
+            "routes/tenant.js",
+            "tests/test_common.js",
+        })]),
+        settings={"excluded_globs": ["tests/*"]},
+    ).find_reference_audit({"name": "db_delete", "path": "core/common.js"}, limit=2)
+
+    assert snippet is not None
+    assert snippet.context_type == "audit"
+    assert snippet.path == "repo-context-audit"
+    assert "completed scan of tracked, non-excluded files" in snippet.content
+    assert "Found 16 references across 4 files" in snippet.content
+    assert "routes/admin.js (9)" in snippet.content
+    assert "routes/rest-api.js (5)" in snippet.content
+    assert "routes/tenant.js (1)" in snippet.content
+    assert "core/common.js (1)" in snippet.content
+    assert "test_common.js" not in snippet.content
+    assert ".secrets" not in snippet.content
+    assert str(tmp_path) not in snippet.content
+
+
+def test_reference_audit_marks_partial_when_file_cap_stops_scan(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "a.js").write_text("db_delete('a');\n")
+    (repo / "b.js").write_text("db_delete('b');\n")
+    (repo / "c.js").write_text("db_delete('c');\n")
+
+    snippet = RepoContextSearcher(
+        SimpleSession([WorkspaceRepo("primary", repo, {"a.js", "b.js", "c.js"})]),
+        settings={"max_files_scanned": 2},
+    ).find_reference_audit("db_delete")
+
+    assert snippet is not None
+    assert "partial scan" in snippet.content
+    assert "max_files_scanned reached" in snippet.content
+    assert "Found 2 references across 2 files" in snippet.content
+
+
 class SimpleSession:
     def __init__(self, repos):
         self.repos = repos

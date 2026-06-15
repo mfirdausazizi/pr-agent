@@ -31,6 +31,21 @@ class FakeSearcher:
             }
         ]
 
+    def find_reference_audit(self, symbol, limit=5):
+        return {
+            "repo": "primary",
+            "repo_label": "primary",
+            "path": "repo-context-audit",
+            "start": 1,
+            "end": 1,
+            "content": (
+                "Exact reference audit for db_delete: completed scan of tracked, non-excluded files. "
+                "Found 2 references across 2 files: app/db.py (1), app/service.py (1)."
+            ),
+            "context_type": "audit",
+            "score": 1000,
+        }
+
     def find_importers(self, path, limit=5):
         return []
 
@@ -54,7 +69,14 @@ def test_builder_deterministic_seed_includes_db_delete_caller_snippet():
     builder = RepoContextBuilder(workspace_session=FakeSession(), searcher=FakeSearcher())
 
     bundle = builder.build(
-        diff_files=[{"path": "app/db.py", "changed_ranges": [{"start": 1, "end": 2}]}],
+        diff_files=[
+            FilePatchInfo(
+                base_file="",
+                head_file="def db_delete(user_id):\n    return client.delete(user_id)\n",
+                patch="@@ -1,2 +1,2 @@\n def db_delete(user_id):\n+    return client.delete(user_id)\n",
+                filename="app/db.py",
+            )
+        ],
         max_agent_rounds=0,
     )
 
@@ -62,6 +84,28 @@ def test_builder_deterministic_seed_includes_db_delete_caller_snippet():
     assert any(snippet.path == "app/service.py" and "db_delete(user_id)" in snippet.content for snippet in bundle.snippets)  # noqa: E501
     assert any(snippet.context_type == "verification" and snippet.path ==
                "tests/test_db.py" for snippet in bundle.snippets)
+
+
+def test_builder_includes_reference_audit_before_changed_symbol_snippets():
+    builder = RepoContextBuilder(workspace_session=FakeSession(), searcher=FakeSearcher())
+
+    bundle = builder.build(
+        diff_files=[
+            FilePatchInfo(
+                base_file="",
+                head_file="def db_delete(user_id):\n    return client.delete(user_id)\n",
+                patch="@@ -1,2 +1,2 @@\n def db_delete(user_id):\n+    return client.delete(user_id)\n",
+                filename="app/db.py",
+            )
+        ],
+        max_agent_rounds=0,
+    )
+
+    audit_index = next(index for index, snippet in enumerate(bundle.snippets) if snippet.context_type == "audit")
+    reference_index = next(index for index, snippet in enumerate(bundle.snippets) if snippet.path == "app/service.py")
+    assert audit_index < reference_index
+    assert bundle.snippets[audit_index].path == "repo-context-audit"
+    assert "Exact reference audit for db_delete" in bundle.snippets[audit_index].content
 
 
 def test_builder_expands_reference_limit_for_changed_symbols():
