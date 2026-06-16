@@ -83,6 +83,8 @@ max_agent_rounds=1
 max_context_snippets=20
 max_file_bytes=200000
 cross_repos=[]
+include_related_prs=false
+max_related_prs=3
 excluded_globs=[
   ".git/**",".hg/**",".svn/**",".env",".env.*",".secrets","**/.env","**/.env.*","**/.secrets",
   "**/node_modules/**","**/.venv/**","**/venv/**","**/__pycache__/**","**/dist/**","**/build/**","**/target/**",

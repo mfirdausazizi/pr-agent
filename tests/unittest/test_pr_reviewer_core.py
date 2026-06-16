@@ -374,6 +374,120 @@ def test_build_repo_context_passes_external_repo_config_to_workspace_manager(mon
     assert captured["fallback_to_diff_only"] is False
 
 
+def test_build_repo_context_replaces_static_external_repo_with_related_pr_ref(monkeypatch):
+    settings = get_settings()
+    original = dict(settings.repo_context)
+    settings.repo_context.include_external_repos = True
+    settings.repo_context.include_related_prs = True
+    settings.repo_context.external_repositories = [
+        {"name": "backend", "url": "https://github.com/fatomate/wabot-backend-v3.git", "ref": "production"},
+        {"name": "rag", "url": "https://github.com/fatomate/wabot_rag.git", "ref": "master"},
+    ]
+    settings.repo_context.allowed_external_repo_urls = [
+        "https://github.com/fatomate/wabot-backend-v3.git",
+        "https://github.com/fatomate/wabot_rag.git",
+    ]
+    settings.repo_context.max_related_prs = 3
+    settings.repo_context.fallback_to_diff_only = False
+    captured = {}
+
+    class CapturingWorkspaceManager:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def create_session(self, git_provider):
+            class Context:
+                def __enter__(self_inner):
+                    return SimpleNamespace(primary=SimpleNamespace(root=None, files=[]), external_repos=[])
+
+                def __exit__(self_inner, *args):
+                    return None
+
+            return Context()
+
+    class EmptyBuilder:
+        def __init__(self, **kwargs):
+            pass
+
+        def build(self, **kwargs):
+            return RepoContextBundle(status="ok")
+
+    git_provider = MagicMock()
+    git_provider.get_user_description.return_value = "Related Backend PR: fatomate/wabot-backend-v3#91"
+    git_provider.get_repo_context_identity.return_value = {"repo": "fatomate/wabot-v4", "pr_num": 197}
+    git_provider.get_diff_files.return_value = []
+    monkeypatch.setattr("pr_agent.algo.repo_context.workspace.RepoWorkspaceManager", CapturingWorkspaceManager)
+    monkeypatch.setattr("pr_agent.algo.repo_context.context_builder.RepoContextBuilder", EmptyBuilder)
+    reviewer = _make_reviewer(git_provider)
+
+    try:
+        reviewer._build_repo_context_bundle()
+    finally:
+        settings.repo_context.clear()
+        settings.repo_context.update(original)
+
+    assert captured["external_repos"] == [
+        {
+            "name": "fatomate-wabot-backend-v3-pr-91",
+            "url": "https://github.com/fatomate/wabot-backend-v3.git",
+            "ref": "refs/pull/91/head",
+        },
+        {"name": "rag", "url": "https://github.com/fatomate/wabot_rag.git", "ref": "master"},
+    ]
+
+
+def test_build_repo_context_related_prs_require_explicit_allowlist(monkeypatch):
+    settings = get_settings()
+    original = dict(settings.repo_context)
+    settings.repo_context.include_external_repos = True
+    settings.repo_context.include_related_prs = True
+    settings.repo_context.external_repositories = [
+        {"name": "backend", "url": "https://github.com/fatomate/wabot-backend-v3.git", "ref": "production"},
+    ]
+    settings.repo_context.allowed_external_repo_urls = []
+    settings.repo_context.fallback_to_diff_only = False
+    captured = {}
+
+    class CapturingWorkspaceManager:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def create_session(self, git_provider):
+            class Context:
+                def __enter__(self_inner):
+                    return SimpleNamespace(primary=SimpleNamespace(root=None, files=[]), external_repos=[])
+
+                def __exit__(self_inner, *args):
+                    return None
+
+            return Context()
+
+    class EmptyBuilder:
+        def __init__(self, **kwargs):
+            pass
+
+        def build(self, **kwargs):
+            return RepoContextBundle(status="ok")
+
+    git_provider = MagicMock()
+    git_provider.get_user_description.return_value = "Related Backend PR: fatomate/wabot-backend-v3#91"
+    git_provider.get_repo_context_identity.return_value = {"repo": "fatomate/wabot-v4", "pr_num": 197}
+    git_provider.get_diff_files.return_value = []
+    monkeypatch.setattr("pr_agent.algo.repo_context.workspace.RepoWorkspaceManager", CapturingWorkspaceManager)
+    monkeypatch.setattr("pr_agent.algo.repo_context.context_builder.RepoContextBuilder", EmptyBuilder)
+    reviewer = _make_reviewer(git_provider)
+
+    try:
+        reviewer._build_repo_context_bundle()
+    finally:
+        settings.repo_context.clear()
+        settings.repo_context.update(original)
+
+    assert captured["external_repos"] == [
+        {"name": "backend", "url": "https://github.com/fatomate/wabot-backend-v3.git", "ref": "production"},
+    ]
+
+
 def test_format_repo_context_vars_clips_context_to_preserve_diff_budget():
     settings = get_settings()
     original = dict(settings.repo_context)

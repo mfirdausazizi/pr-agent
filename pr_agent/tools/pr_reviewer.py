@@ -18,6 +18,7 @@ from pr_agent.algo.pr_processing import (add_ai_metadata_to_diff_files,
                                          retry_with_fallback_models)
 from pr_agent.algo.repo_context.line_validator import validate_key_issues_to_review
 from pr_agent.algo.repo_context.prompt_formatter import format_repo_context, reserve_diff_tokens
+from pr_agent.algo.repo_context.related_prs import build_related_pr_external_repos
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (ModelType, PRReviewHeader,
                                  convert_to_markdown_v2, github_action_output,
@@ -134,6 +135,11 @@ class PRReviewer:
             external_repositories = repo_context_settings.get("external_repositories",
                                                               repo_context_settings.get("cross_repos", []))
             allowed_external_repo_urls = repo_context_settings.get("allowed_external_repo_urls", [])
+            external_repositories = self._merge_related_pr_external_repositories(
+                external_repositories,
+                allowed_external_repo_urls,
+                repo_context_settings,
+            )
             if not allowed_external_repo_urls:
                 allowed_external_repo_urls = [repo.get("url") for repo in external_repositories if repo.get("url")]
 
@@ -186,6 +192,34 @@ class PRReviewer:
                 self.vars["consolidation_verification_context"] = ""
                 return SimpleNamespace(status="unavailable", reason=str(e), snippets=[], cleanup=lambda: None)
             raise
+
+    def _merge_related_pr_external_repositories(
+            self,
+            external_repositories,
+            allowed_external_repo_urls,
+            repo_context_settings,
+    ) -> list:
+        external_repositories = list(external_repositories or [])
+        if not repo_context_settings.get("include_related_prs", False):
+            return external_repositories
+
+        identity = self.git_provider.get_repo_context_identity()
+        related_repositories = build_related_pr_external_repos(
+            self.git_provider.get_user_description(),
+            allowed_external_repo_urls,
+            current_repo=identity.get("repo"),
+            current_pr_num=identity.get("pr_num"),
+            max_related_prs=int(repo_context_settings.get("max_related_prs", 3)),
+        )
+        if not related_repositories:
+            return external_repositories
+
+        related_urls = {repo["url"] for repo in related_repositories}
+        merged = related_repositories + [
+            repo for repo in external_repositories if repo.get("url") not in related_urls
+        ]
+        get_logger().info("Detected related PR repo context", artifact={"external_repositories": related_repositories})
+        return merged
 
     def _instantiate_repo_context_component(self, component, candidates):
         last_error = None
