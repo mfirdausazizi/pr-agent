@@ -20,7 +20,7 @@ from pr_agent.algo.repo_context.line_validator import validate_key_issues_to_rev
 from pr_agent.algo.repo_context.prompt_formatter import format_repo_context, reserve_diff_tokens
 from pr_agent.algo.repo_context.related_prs import build_related_pr_external_repos
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import (ModelType, PRReviewHeader,
+from pr_agent.algo.utils import (ModelType, PRReviewHeader, append_review_metadata,
                                  convert_to_markdown_v2, github_action_output,
                                  get_max_tokens, load_yaml,
                                  show_relevant_configurations)
@@ -675,6 +675,9 @@ class PRReviewer:
             markdown_text += ensemble_footer(self.ensemble_models_used,
                                              self.ensemble_consolidator,
                                              self.ensemble_consolidated)
+
+        reviewed_head_sha = getattr(getattr(getattr(self.git_provider, "pr", None), "head", None), "sha", None)
+        markdown_text = append_review_metadata(markdown_text, reviewed_head_sha=reviewed_head_sha)
 
         return markdown_text
 

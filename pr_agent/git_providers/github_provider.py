@@ -20,7 +20,7 @@ from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import extract_hunk_headers
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE
-from ..algo.utils import (PRReviewHeader, Range, clip_tokens,
+from ..algo.utils import (PRReviewHeader, Range, clip_tokens, extract_reviewed_head_sha,
                           find_line_number_of_relevant_line_in_file,
                           load_large_diff, set_file_languages)
 from ..config_loader import get_settings
@@ -165,17 +165,48 @@ class GithubProvider(GitProvider):
         if self.previous_review:
             self.incremental.commits_range = self.get_commit_range()
             # Get all files changed during the commit range
+            pr_file_map = self._get_pr_file_map()
 
             for commit in self.incremental.commits_range:
                 if commit.commit.message.startswith(f"Merge branch '{self._get_repo().default_branch}'"):
                     get_logger().info(f"Skipping merge commit {commit.commit.message}")
                     continue
-                self.unreviewed_files_set.update({file.filename: file for file in commit.files})
+                for file in commit.files:
+                    pr_file = pr_file_map.get(file.filename)
+                    if not pr_file and getattr(file, "previous_filename", None):
+                        pr_file = pr_file_map.get(file.previous_filename)
+                    if pr_file:
+                        self.unreviewed_files_set[pr_file.filename] = pr_file
         else:
             get_logger().info("No previous review found, will review the entire PR")
             self.incremental.is_incremental = False
 
+    def _get_pr_file_map(self):
+        pr_file_map = {}
+        try:
+            pr_files = list(self.pr.get_files())
+        except Exception:
+            pr_files = []
+
+        for file in pr_files:
+            pr_file_map[file.filename] = file
+            previous_filename = getattr(file, "previous_filename", None)
+            if previous_filename:
+                pr_file_map[previous_filename] = file
+
+        return pr_file_map
+
     def get_commit_range(self):
+        reviewed_head_sha = extract_reviewed_head_sha(getattr(self.previous_review, "body", ""))
+        if reviewed_head_sha:
+            for index, commit in enumerate(self.pr_commits):
+                if commit.sha == reviewed_head_sha:
+                    self.incremental.last_seen_commit = commit
+                    if index + 1 < len(self.pr_commits):
+                        self.incremental.first_new_commit = self.pr_commits[index + 1]
+                        return self.pr_commits[index + 1:]
+                    return []
+
         last_review_time = self.previous_review.created_at
         first_new_commit_index = None
         for index in range(len(self.pr_commits) - 1, -1, -1):
