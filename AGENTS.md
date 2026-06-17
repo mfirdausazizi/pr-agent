@@ -48,6 +48,17 @@ PR-Agent automates AI-assisted reviews for pull requests across multiple git pro
 - End-to-end suites require provider tokens (`TOKEN_GITHUB`, `TOKEN_GITLAB`, `BITBUCKET_USERNAME`, `BITBUCKET_PASSWORD`) and may take several minutes; run them only when credentials and sandboxes are configured.
 - The health test (`tests/health_test/main.py`) exercises `/describe`, `/review`, and `/improve`; update expected artifacts if prompts change meaningfully.
 
+## Incremental Review Guardrails
+
+GitHub incremental reviews (`/review -i`) must stay scoped to files that are still part of the current PR diff.
+
+- `GithubProvider._get_incremental_commits()` may collect candidate files from commits after the previous review, but it must intersect those candidates with `self.pr.get_files()` before review generation. This prevents unrelated files from branch history, merge commits, or rebases from entering the prompt.
+- Use the current PR file object as the value in `unreviewed_files_set`; do not keep a raw commit file if it is not in the current PR. For renames, map both `filename` and `previous_filename` back to the current PR filename.
+- Review comments include a hidden marker like `<!-- pr-agent-review-metadata:{"reviewed_head_sha":"<sha>"}-->`. `get_commit_range()` should prefer that SHA as the incremental baseline, then fall back to the older timestamp method when the marker is missing, malformed, or points to a commit no longer present after a force-push.
+- The marker is intentionally hidden HTML so users do not see bookkeeping in GitHub, while later runs can read the exact head SHA that was reviewed. This avoids relying only on comment creation time or authored dates, both of which can be misleading after rebases.
+- Add or update focused unit tests in `tests/unittest/test_github_provider_incremental.py` when changing this flow. Cover PR-file scoping, rename mapping, metadata baseline, missing metadata fallback, and rewritten-SHA fallback.
+- When auditing production logs, a healthy incremental review should show the PR's current files only, token counts below the model limit, and the hidden `reviewed_head_sha` marker in the published review output.
+
 ## Commit and Pull Request Guidelines
 
 - Follow `CONTRIBUTING.md`: keep changes focused, add or update tests, and use Conventional Commit-style messages (e.g., `fix: handle missing repo settings gracefully`).
