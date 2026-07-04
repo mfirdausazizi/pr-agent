@@ -72,9 +72,11 @@ PR-Agent automates AI-assisted reviews for pull requests across multiple git pro
   - URL: `https://ahib8a9mgq077qljkszetods.149.118.150.110.sslip.io`.
   - Webhook endpoint: `/api/v1/github_webhooks`.
   - Source: `mfirdausazizi/pr-agent`, branch `feature/agentic-repo-access`, commit
-    `cdd265cf75c2896fb97a0a4425188ef2a7134c41` (contains all `feat/multi-model-ensemble` commits).
+    `8f86b69dd5c75bd70a2f5040152a18511b1955e4` (merge of `feat/multi-model-ensemble` hardening fixes).
   - Build: `/docker/Dockerfile`, target `github_app`, port `3000`.
-  - Running image: `ahib8a9mgq077qljkszetods:cdd265cf75c2896fb97a0a4425188ef2a7134c41`.
+  - Latest deployment UUID: `g130n5p6chk3w991owp77s2m`.
+  - Running image: `ahib8a9mgq077qljkszetods:8f86b69dd5c75bd70a2f5040152a18511b1955e4`.
+  - `feat/multi-model-ensemble` is merged into fork `main` (merge commit `4571eee6`).
 - Rollback path: the previous app `pr-agent` remains running at
   `https://pr-agent.fatomate.com/api/v1/github_webhooks`. Repoint the GitHub App webhook there to revert.
 - Ensemble decision (2026-07-04): run the full 2-model ensemble
