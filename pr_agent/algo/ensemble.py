@@ -2,11 +2,11 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, List, Optional, Tuple, TypeVar
 
-T = TypeVar("T")
-
 from pr_agent.algo.utils import get_max_tokens
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
+
+T = TypeVar("T")
 
 
 @dataclass
@@ -33,11 +33,15 @@ def _parse_models_value(value: Any) -> List[str]:
 def resolve_ensemble_config(tool_section: str) -> Optional[EnsembleConfig]:
     """
     Resolve the ensemble configuration for a tool ("pr_reviewer" / "pr_code_suggestions").
-    Tool-section keys override [config] keys. Returns None when the feature is off.
+    Tool-section keys override [config] keys; an explicitly empty tool-section value
+    ([] or "") disables the ensemble for that tool. Returns None when the feature is off.
     """
     settings = get_settings()
-    models = (_parse_models_value(settings.get(f"{tool_section}.ensemble_models", None)) or
-              _parse_models_value(settings.get("config.ensemble_models", None)))
+    tool_value = settings.get(f"{tool_section}.ensemble_models", None)
+    if tool_value is not None:
+        models = _parse_models_value(tool_value)
+    else:
+        models = _parse_models_value(settings.get("config.ensemble_models", None))
     if not models:
         return None
     consolidator = (settings.get(f"{tool_section}.ensemble_consolidator_model", None) or

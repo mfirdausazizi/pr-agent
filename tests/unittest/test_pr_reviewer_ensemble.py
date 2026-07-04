@@ -133,6 +133,31 @@ async def test_ensemble_skips_models_with_empty_diff(monkeypatch):
     assert reviewer.ensemble_models_used == ["model-b"]
 
 
+async def test_ensemble_skips_models_whose_diff_budgeting_fails(monkeypatch):
+    reviewer = build_reviewer()
+
+    def diff_for(provider, handler, model, **kwargs):
+        if model == "model-a":
+            raise Exception("Ensure model-a is defined in MAX_TOKENS")
+        return "diff-b"
+
+    monkeypatch.setattr(pr_reviewer_module, "get_pr_diff", diff_for)
+
+    async def member(model, patches_diff):
+        assert model == "model-b"
+        return "review-b"
+
+    reviewer._get_prediction_for_diff = member
+    reviewer._consolidate_predictions = AsyncMock()
+
+    await reviewer._prepare_prediction_ensemble(
+        EnsembleConfig(models=["model-a", "model-b"], consolidator="model-a"))
+
+    assert reviewer.prediction == "review-b"
+    assert reviewer.ensemble_models_used == ["model-b"]
+    reviewer._consolidate_predictions.assert_not_awaited()
+
+
 async def test_consolidate_predictions_renders_prompts_and_returns_response(monkeypatch):
     reviewer = build_reviewer()
     reviewer.ai_handler.chat_completion = AsyncMock(return_value=("consolidated-yaml", "stop"))

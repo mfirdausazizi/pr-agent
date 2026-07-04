@@ -55,6 +55,32 @@ def test_resolve_ensemble_config_tool_section_overrides_global():
         settings.set("pr_reviewer.ensemble_consolidator_model", None)
 
 
+def test_resolve_ensemble_config_explicit_empty_tool_list_disables_ensemble():
+    settings = get_settings()
+    try:
+        settings.set("config.ensemble_models", ["global-a", "global-b"])
+        settings.set("pr_reviewer.ensemble_models", [])
+        # an explicit empty tool-level list opts this tool out of the ensemble
+        assert resolve_ensemble_config("pr_reviewer") is None
+        # the other tool still resolves the global settings
+        suggestions_config = resolve_ensemble_config("pr_code_suggestions")
+        assert suggestions_config.models == ["global-a", "global-b"]
+    finally:
+        settings.set("config.ensemble_models", None)
+        settings.set("pr_reviewer.ensemble_models", None)
+
+
+def test_resolve_ensemble_config_explicit_empty_string_disables_ensemble():
+    settings = get_settings()
+    try:
+        settings.set("config.ensemble_models", ["global-a", "global-b"])
+        settings.set("pr_code_suggestions.ensemble_models", "")
+        assert resolve_ensemble_config("pr_code_suggestions") is None
+    finally:
+        settings.set("config.ensemble_models", None)
+        settings.set("pr_code_suggestions.ensemble_models", None)
+
+
 @pytest.mark.asyncio
 async def test_gather_ensemble_predictions_keeps_successes_and_drops_failures():
     async def fake_fn(model):

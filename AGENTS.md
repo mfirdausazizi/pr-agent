@@ -72,15 +72,22 @@ PR-Agent automates AI-assisted reviews for pull requests across multiple git pro
   - URL: `https://ahib8a9mgq077qljkszetods.149.118.150.110.sslip.io`.
   - Webhook endpoint: `/api/v1/github_webhooks`.
   - Source: `mfirdausazizi/pr-agent`, branch `feature/agentic-repo-access`, commit
-    `2063a917ff5f2956d97f49e7d40c47705549110a`.
+    `cdd265cf75c2896fb97a0a4425188ef2a7134c41` (contains all `feat/multi-model-ensemble` commits).
   - Build: `/docker/Dockerfile`, target `github_app`, port `3000`.
-  - Latest deployment UUID: `mi4u4qd448imrblj377ixlej`.
-  - Running image: `ahib8a9mgq077qljkszetods:2063a917ff5f2956d97f49e7d40c47705549110a`.
+  - Running image: `ahib8a9mgq077qljkszetods:cdd265cf75c2896fb97a0a4425188ef2a7134c41`.
 - Rollback path: the previous app `pr-agent` remains running at
   `https://pr-agent.fatomate.com/api/v1/github_webhooks`. Repoint the GitHub App webhook there to revert.
+- Ensemble decision (2026-07-04): run the full 2-model ensemble
+  (`openai/claude-opus-4-8` + `openai/gpt-5.5`) on both PR-open and push triggers; cost/tokens are
+  accepted. Note that `--config.ensemble_models=...` CLI overrides in `push_commands` do NOT take
+  effect: `apply_repo_settings` replays env vars (`CONFIG__ENSEMBLE_MODELS`) as the highest-precedence
+  layer on every request, clobbering the CLI value. If a per-trigger override is ever needed, use the
+  tool-section form (`--pr_reviewer.ensemble_models=...` / `--pr_code_suggestions.ensemble_models=...`),
+  which no env var resets. See `docs/multi-model-ensemble-deep-review-report.md`.
 - Automation config currently set on the canary:
   - `GITHUB_APP__PR_COMMANDS=["/describe --pr_description.final_update_message=false","/review","/improve"]`
   - `GITHUB_APP__PUSH_COMMANDS=["/review -i --config.ensemble_models=openai/claude-opus-4-8","/improve --config.ensemble_models=openai/claude-opus-4-8"]`
+    (the `--config.ensemble_models` args are inert per the note above; both triggers run the 2-model ensemble)
   - `GITHUB_APP__PUSH_TRIGGER_WAIT_FOR_INITIAL_REVIEW=true`
   - `GITHUB_APP__HANDLE_PUSH_TRIGGER=true`
   - `CONFIG__ENSEMBLE_MODELS=openai/claude-opus-4-8,openai/gpt-5.5`

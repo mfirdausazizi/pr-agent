@@ -432,8 +432,10 @@ class PRCodeSuggestions:
                                                                   patches_diff, model=model,
                                                                   dedicated_prompt=dedicated_prompt)
         if response_reflect:
-            await self.analyze_self_reflection_response(data, response_reflect)
-            return True
+            if await self.analyze_self_reflection_response(data, response_reflect):
+                return True
+            get_logger().warning("Self-reflection feedback count mismatch, using default score 7",
+                                 artifact={"num_suggestions": len(data["code_suggestions"])})
         # get_logger().error(f"Could not self-reflect on suggestions. using default score 7")
         for i, suggestion in enumerate(data["code_suggestions"]):
             suggestion["score"] = 7
@@ -455,7 +457,13 @@ class PRCodeSuggestions:
 
         return data
 
-    async def analyze_self_reflection_response(self, data, response_reflect):
+    async def analyze_self_reflection_response(self, data, response_reflect) -> bool:
+        """Apply reflection feedback to the suggestions.
+
+        Returns True when the feedback was applied, False when the feedback list
+        is empty or its length does not match the suggestions (the caller then
+        falls back to default scores).
+        """
         response_reflect_yaml = load_yaml(response_reflect)
         code_suggestions_feedback = response_reflect_yaml.get("code_suggestions", [])
         if code_suggestions_feedback and len(code_suggestions_feedback) == len(data["code_suggestions"]):
@@ -508,6 +516,8 @@ class PRCodeSuggestions:
                             suggestion['existing_code'] = ""
                 except Exception as e:
                     get_logger().error(f"Error processing suggestion {i + 1}, error: {e}")
+            return True
+        return False
 
     @staticmethod
     def _truncate_if_needed(suggestion):

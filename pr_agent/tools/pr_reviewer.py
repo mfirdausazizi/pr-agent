@@ -248,11 +248,18 @@ class PRReviewer:
         # it must not run concurrently
         member_diffs = {}
         for model in ensemble.models:
-            patches_diff = get_pr_diff(self.git_provider,
-                                       self.token_handler,
-                                       model,
-                                       add_line_numbers_to_hunks=True,
-                                       disable_extra_lines=False,)
+            try:
+                patches_diff = get_pr_diff(self.git_provider,
+                                           self.token_handler,
+                                           model,
+                                           add_line_numbers_to_hunks=True,
+                                           disable_extra_lines=False,)
+            except Exception as e:
+                # a misconfigured member (e.g. missing MAX_TOKENS entry) must degrade
+                # like a prediction-time failure, not abort the whole review
+                get_logger().warning(f"Failed to budget diff for ensemble model {model}, skipping it",
+                                     artifact={"error": e})
+                continue
             if patches_diff:
                 member_diffs[model] = patches_diff
             else:
