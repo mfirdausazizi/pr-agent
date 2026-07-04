@@ -533,15 +533,22 @@ class PRReviewer:
         member_diffs = {}
         member_vars = {}
         for model in ensemble.models:
-            variables = self._format_repo_context_vars(model)
-            token_handler = self._build_token_handler(variables,
-                                                      get_settings().pr_review_prompt.system,
-                                                      get_settings().pr_review_prompt.user)
-            patches_diff = get_pr_diff(self.git_provider,
-                                       token_handler,
-                                       model,
-                                       add_line_numbers_to_hunks=True,
-                                       disable_extra_lines=False, )
+            try:
+                variables = self._format_repo_context_vars(model)
+                token_handler = self._build_token_handler(variables,
+                                                          get_settings().pr_review_prompt.system,
+                                                          get_settings().pr_review_prompt.user)
+                patches_diff = get_pr_diff(self.git_provider,
+                                           token_handler,
+                                           model,
+                                           add_line_numbers_to_hunks=True,
+                                           disable_extra_lines=False, )
+            except Exception as e:
+                # a misconfigured member (e.g. missing MAX_TOKENS entry) must degrade
+                # like a prediction-time failure, not abort the whole review
+                get_logger().warning(f"Failed to budget diff for ensemble model {model}, skipping it",
+                                     artifact={"error": e})
+                continue
             if patches_diff:
                 member_diffs[model] = patches_diff
                 member_vars[model] = variables

@@ -116,6 +116,35 @@ async def test_prepare_prediction_ensemble_raises_when_no_model_succeeds(monkeyp
             EnsembleConfig(models=["model-a"], consolidator="model-a"))
 
 
+async def test_reflect_and_score_treats_count_mismatch_as_failure():
+    # the consolidate prompt asks the model to keep list length; if it drops
+    # entries anyway, the reflection must be treated as failed (default scores)
+    # instead of silently publishing unscored suggestions
+    tool = build_tool()
+    data = {"code_suggestions": [
+        {"one_sentence_summary": "a", "label": "bug"},
+        {"one_sentence_summary": "b", "label": "bug"},
+    ]}
+    # feedback has only one entry for two suggestions
+    short_feedback = (
+        "code_suggestions:\n"
+        "- suggestion_summary: a\n"
+        "  relevant_file: f\n"
+        "  relevant_lines_start: 1\n"
+        "  relevant_lines_end: 2\n"
+        "  suggestion_score: 9\n"
+        "  why: good\n"
+    )
+    tool.self_reflect_on_suggestions = AsyncMock(return_value=short_feedback)
+
+    ok = await tool._reflect_and_score(data, "diff", model="model-c",
+                                       dedicated_prompt="pr_code_suggestions_reflect_consolidate_prompt")
+
+    assert ok is False
+    for suggestion in data["code_suggestions"]:
+        assert suggestion["score"] == 7
+
+
 async def test_get_prediction_composes_generation_and_reflection():
     tool = build_tool()
     gen_data = {"code_suggestions": [{"one_sentence_summary": "s", "label": "bug", "relevant_file": "f"}]}
