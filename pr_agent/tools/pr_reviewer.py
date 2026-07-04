@@ -9,6 +9,9 @@ from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.ensemble import (EnsembleConfig, ensemble_footer,
+                                    gather_ensemble_predictions,
+                                    resolve_ensemble_config)
 from pr_agent.algo.pr_processing import (add_ai_metadata_to_diff_files,
                                          get_pr_diff,
                                          retry_with_fallback_models)
@@ -63,6 +66,9 @@ class PRReviewer:
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
         self.prediction = None
+        self.ensemble_models_used = []
+        self.ensemble_consolidator = ""
+        self.ensemble_consolidated = False
         answer_str, question_str = self._get_user_answers()
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
@@ -152,7 +158,11 @@ class PRReviewer:
             if get_settings().config.publish_output and not get_settings().config.get('is_auto_command', False):
                 self.git_provider.publish_comment("Preparing review...", is_temporary=True)
 
-            await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR)
+            ensemble_config = resolve_ensemble_config("pr_reviewer")
+            if ensemble_config:
+                await self._prepare_prediction_ensemble(ensemble_config)
+            else:
+                await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR)
             if not self.prediction:
                 self.git_provider.remove_initial_comment()
                 return None
@@ -201,17 +211,21 @@ class PRReviewer:
             self.prediction = None
 
     async def _get_prediction(self, model: str) -> str:
+        return await self._get_prediction_for_diff(model, self.patches_diff)
+
+    async def _get_prediction_for_diff(self, model: str, patches_diff: str) -> str:
         """
         Generate an AI prediction for the pull request review.
 
         Args:
             model: A string representing the AI model to be used for the prediction.
+            patches_diff: The token-budgeted PR diff to review.
 
         Returns:
             A string representing the AI prediction for the pull request review.
         """
         variables = copy.deepcopy(self.vars)
-        variables["diff"] = self.patches_diff  # update diff
+        variables["diff"] = patches_diff  # update diff
 
         environment = Environment(undefined=StrictUndefined)
         system_prompt = environment.from_string(get_settings().pr_review_prompt.system).render(variables)
@@ -224,6 +238,94 @@ class PRReviewer:
             user=user_prompt
         )
 
+        return response
+
+    async def _prepare_prediction_ensemble(self, ensemble: EnsembleConfig) -> None:
+        get_logger().info(f"Running ensemble review with models {ensemble.models}, "
+                          f"consolidator {ensemble.consolidator}")
+        # compute the per-model diffs sequentially before fanning out the AI calls:
+        # get_pr_diff mutates token counts on the provider's cached diff files, so
+        # it must not run concurrently
+        member_diffs = {}
+        for model in ensemble.models:
+            try:
+                patches_diff = get_pr_diff(self.git_provider,
+                                           self.token_handler,
+                                           model,
+                                           add_line_numbers_to_hunks=True,
+                                           disable_extra_lines=False,)
+            except Exception as e:
+                # a misconfigured member (e.g. missing MAX_TOKENS entry) must degrade
+                # like a prediction-time failure, not abort the whole review
+                get_logger().warning(f"Failed to budget diff for ensemble model {model}, skipping it",
+                                     artifact={"error": e})
+                continue
+            if patches_diff:
+                member_diffs[model] = patches_diff
+            else:
+                get_logger().warning(f"Empty diff for PR: {self.pr_url} (ensemble model {model})")
+
+        models_with_diff = [model for model in ensemble.models if model in member_diffs]
+        predictions = await gather_ensemble_predictions(
+            lambda model: self._get_prediction_for_diff(model, member_diffs[model]),
+            models_with_diff)
+        if not predictions:
+            get_logger().warning("All ensemble models failed, falling back to the standard review flow")
+            await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR)
+            return
+
+        self.ensemble_models_used = [model for model, _ in predictions]
+        if len(predictions) == 1:
+            get_logger().info("Single ensemble prediction available, skipping consolidation")
+            self.prediction = predictions[0][1]
+            return
+
+        self.ensemble_consolidator = ensemble.consolidator
+        try:
+            self.prediction = await self._consolidate_predictions(predictions, ensemble.consolidator)
+            self.ensemble_consolidated = True
+        except Exception as e:
+            get_logger().warning(f"Ensemble consolidation with {ensemble.consolidator} failed, "
+                                 f"using the review from {predictions[0][0]}", artifact={"error": e})
+            self.prediction = predictions[0][1]
+
+    async def _consolidate_predictions(self, predictions: List[Tuple[str, str]],
+                                       consolidator: str) -> str:
+        model_reviews = ""
+        for model, prediction in predictions:
+            model_reviews += f"## Review from model '{model}':\n======\n{prediction.strip()}\n======\n\n"
+
+        variables = copy.deepcopy(self.vars)
+        variables["model_reviews"] = model_reviews
+        # the consolidation token handler accounts for the model reviews, so the
+        # diff is budgeted to fit alongside them
+        token_handler = TokenHandler(self.git_provider.pr,
+                                     variables,
+                                     get_settings().pr_review_consolidate_prompt.system,
+                                     get_settings().pr_review_consolidate_prompt.user)
+        patches_diff = get_pr_diff(self.git_provider,
+                                   token_handler,
+                                   consolidator,
+                                   add_line_numbers_to_hunks=True,
+                                   disable_extra_lines=False,)
+        variables["diff"] = patches_diff
+
+        environment = Environment(undefined=StrictUndefined)
+        system_prompt = environment.from_string(
+            get_settings().pr_review_consolidate_prompt.system).render(variables)
+        user_prompt = environment.from_string(
+            get_settings().pr_review_consolidate_prompt.user).render(variables)
+        response, finish_reason = await self.ai_handler.chat_completion(
+            model=consolidator,
+            temperature=get_settings().config.temperature,
+            system=system_prompt,
+            user=user_prompt
+        )
+        if finish_reason == "length":
+            get_logger().warning(f"Consolidation response was truncated (finish_reason=length) "
+                                 f"for consolidator {consolidator}")
+        if not response or not response.strip():
+            raise Exception("Empty consolidation response")
         return response
 
     def _prepare_pr_review(self) -> str:
@@ -275,6 +377,11 @@ class PRReviewer:
 
         if markdown_text == None or len(markdown_text) == 0:
             markdown_text = ""
+
+        if markdown_text and self.ensemble_models_used:
+            markdown_text += ensemble_footer(self.ensemble_models_used,
+                                             self.ensemble_consolidator,
+                                             self.ensemble_consolidated)
 
         return markdown_text
 

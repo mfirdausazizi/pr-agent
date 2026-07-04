@@ -195,3 +195,15 @@ extra_instructions = "..."
     """
     ```
     Use triple quotes to write multi-line instructions. Use bullet points to make the instructions more readable.
+
+## Multi-model ensemble
+
+This tool can run several models independently and consolidate their findings
+with a dedicated consolidator model. See the
+[ensemble documentation](../core-abilities/ensemble_review.md) for details:
+
+```toml
+[config]
+ensemble_models = ["claude-opus-4-8", "gpt-5.5-2026-04-23"]
+ensemble_consolidator_model = "claude-opus-4-8"
+```

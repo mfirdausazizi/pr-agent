@@ -13,6 +13,10 @@ from jinja2 import Environment, StrictUndefined
 from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.ensemble import (EnsembleConfig, ensemble_footer,
+                                    gather_ensemble_predictions,
+                                    pick_min_budget_model,
+                                    resolve_ensemble_config)
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
 from pr_agent.algo.pr_processing import (add_ai_metadata_to_diff_files,
                                          get_pr_diff, get_pr_multi_diffs,
@@ -46,6 +50,9 @@ class PRCodeSuggestions:
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
         self.prediction = None
+        self.ensemble_models_used = []
+        self.ensemble_consolidator = ""
+        self.ensemble_consolidated = False
         self.pr_url = pr_url
         self.cli_mode = cli_mode
         self.pr_description, self.pr_description_files = (
@@ -113,7 +120,18 @@ class PRCodeSuggestions:
             # if not self.is_extended:
             #     data = await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR)
             # else:
-            data = await retry_with_fallback_models(self.prepare_prediction_main, model_type=ModelType.REGULAR)
+            ensemble_config = resolve_ensemble_config("pr_code_suggestions")
+            if ensemble_config:
+                try:
+                    data = await self.prepare_prediction_ensemble(ensemble_config)
+                except Exception as e:
+                    get_logger().warning("Ensemble code suggestions failed, falling back to the standard flow",
+                                         artifact={"error": e})
+                    self.ensemble_models_used = []
+                    data = await retry_with_fallback_models(self.prepare_prediction_main,
+                                                            model_type=ModelType.REGULAR)
+            else:
+                data = await retry_with_fallback_models(self.prepare_prediction_main, model_type=ModelType.REGULAR)
             if not data:
                 data = {"code_suggestions": []}
             self.data = data
@@ -134,6 +152,10 @@ class PRCodeSuggestions:
 
                     # generate summarized suggestions
                     pr_body = self.generate_summarized_suggestions(data)
+                    if self.ensemble_models_used:
+                        pr_body += ensemble_footer(self.ensemble_models_used,
+                                                   self.ensemble_consolidator,
+                                                   self.ensemble_consolidated)
                     get_logger().debug(f"PR output", artifact=pr_body)
 
                     # require self-review
@@ -179,6 +201,10 @@ class PRCodeSuggestions:
             else:
                 get_logger().info('Code suggestions generated for PR, but not published since publish_output is False.')
                 pr_body = self.generate_summarized_suggestions(data)
+                if self.ensemble_models_used:
+                    pr_body += ensemble_footer(self.ensemble_models_used,
+                                               self.ensemble_consolidator,
+                                               self.ensemble_consolidated)
                 get_settings().data = {"artifact": pr_body}
                 return
         except Exception as e:
@@ -383,7 +409,8 @@ class PRCodeSuggestions:
         data = self.prediction
         return data
 
-    async def _get_prediction(self, model: str, patches_diff: str, patches_diff_no_line_number: str) -> dict:
+    async def _get_suggestions_prediction(self, model: str, patches_diff: str,
+                                          patches_diff_no_line_number: str) -> dict:
         variables = copy.deepcopy(self.vars)
         variables["diff"] = patches_diff  # update diff
         variables["diff_no_line_numbers"] = patches_diff_no_line_number  # update diff
@@ -397,7 +424,26 @@ class PRCodeSuggestions:
             get_settings().user_prompt = user_prompt
 
         # load suggestions from the AI response
-        data = self._prepare_pr_code_suggestions(response)
+        return self._prepare_pr_code_suggestions(response)
+
+    async def _reflect_and_score(self, data: dict, patches_diff: str, model: str,
+                                 dedicated_prompt: str = "") -> bool:
+        response_reflect = await self.self_reflect_on_suggestions(data["code_suggestions"],
+                                                                  patches_diff, model=model,
+                                                                  dedicated_prompt=dedicated_prompt)
+        if response_reflect:
+            if await self.analyze_self_reflection_response(data, response_reflect):
+                return True
+            get_logger().warning("Self-reflection feedback count mismatch, using default score 7",
+                                 artifact={"num_suggestions": len(data["code_suggestions"])})
+        # get_logger().error(f"Could not self-reflect on suggestions. using default score 7")
+        for i, suggestion in enumerate(data["code_suggestions"]):
+            suggestion["score"] = 7
+            suggestion["score_why"] = ""
+        return False
+
+    async def _get_prediction(self, model: str, patches_diff: str, patches_diff_no_line_number: str) -> dict:
+        data = await self._get_suggestions_prediction(model, patches_diff, patches_diff_no_line_number)
 
         # self-reflect on suggestions (mandatory, since line numbers are generated now here)
         model_reflect_with_reasoning = get_model('model_reasoning')
@@ -407,19 +453,17 @@ class PRCodeSuggestions:
             # we are using a fallback model (should not happen on regular conditions)
             get_logger().warning(f"Using the same model for self-reflection as the one used for suggestions")
             model_reflect_with_reasoning = model
-        response_reflect = await self.self_reflect_on_suggestions(data["code_suggestions"],
-                                                                  patches_diff, model=model_reflect_with_reasoning)
-        if response_reflect:
-            await self.analyze_self_reflection_response(data, response_reflect)
-        else:
-            # get_logger().error(f"Could not self-reflect on suggestions. using default score 7")
-            for i, suggestion in enumerate(data["code_suggestions"]):
-                suggestion["score"] = 7
-                suggestion["score_why"] = ""
+        await self._reflect_and_score(data, patches_diff, model_reflect_with_reasoning)
 
         return data
 
-    async def analyze_self_reflection_response(self, data, response_reflect):
+    async def analyze_self_reflection_response(self, data, response_reflect) -> bool:
+        """Apply reflection feedback to the suggestions.
+
+        Returns True when the feedback was applied, False when the feedback list
+        is empty or its length does not match the suggestions (the caller then
+        falls back to default scores).
+        """
         response_reflect_yaml = load_yaml(response_reflect)
         code_suggestions_feedback = response_reflect_yaml.get("code_suggestions", [])
         if code_suggestions_feedback and len(code_suggestions_feedback) == len(data["code_suggestions"]):
@@ -472,6 +516,8 @@ class PRCodeSuggestions:
                             suggestion['existing_code'] = ""
                 except Exception as e:
                     get_logger().error(f"Error processing suggestion {i + 1}, error: {e}")
+            return True
+        return False
 
     @staticmethod
     def _truncate_if_needed(suggestion):
@@ -667,8 +713,7 @@ class PRCodeSuggestions:
             get_logger().error(f"Error removing line numbers from patches_diff_list, error: {e}")
             return patches_diff_list
 
-    async def prepare_prediction_main(self, model: str) -> dict:
-        # get PR diff
+    async def _build_diff_chunks(self, model: str) -> None:
         if get_settings().pr_code_suggestions.decouple_hunks:
             self.patches_diff_list = get_pr_multi_diffs(self.git_provider,
                                                         self.token_handler,
@@ -694,6 +739,29 @@ class PRCodeSuggestions:
                                                             max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                                                             add_line_numbers=True)  # decouple hunk with line numbers
 
+    def _merge_predictions_by_score(self, prediction_list: List[dict]) -> dict:
+        data = {"code_suggestions": []}
+        for j, predictions in enumerate(prediction_list):  # each call adds an element to the list
+            if predictions and "code_suggestions" in predictions:
+                score_threshold = max(1, int(get_settings().pr_code_suggestions.suggestions_score_threshold))
+                for i, prediction in enumerate(predictions["code_suggestions"]):
+                    try:
+                        score = int(prediction.get("score", 1))
+                        if score >= score_threshold:
+                            data["code_suggestions"].append(prediction)
+                        else:
+                            get_logger().info(
+                                f"Removing suggestions {i} from call {j}, because score is {score}, and score_threshold is {score_threshold}",
+                                artifact=prediction)
+                    except Exception as e:
+                        get_logger().error(f"Error getting PR diff for suggestion {i} in call {j}, error: {e}",
+                                           artifact={"prediction": prediction})
+        return data
+
+    async def prepare_prediction_main(self, model: str) -> dict:
+        # get PR diff
+        await self._build_diff_chunks(model)
+
         if self.patches_diff_list:
             get_logger().info(f"Number of PR chunk calls: {len(self.patches_diff_list)}")
             get_logger().debug(f"PR diff:", artifact=self.patches_diff_list)
@@ -711,27 +779,85 @@ class PRCodeSuggestions:
                     prediction = await self._get_prediction(model, patches_diff, patches_diff_no_line_numbers)
                     prediction_list.append(prediction)
 
-            data = {"code_suggestions": []}
-            for j, predictions in enumerate(prediction_list):  # each call adds an element to the list
-                if "code_suggestions" in predictions:
-                    score_threshold = max(1, int(get_settings().pr_code_suggestions.suggestions_score_threshold))
-                    for i, prediction in enumerate(predictions["code_suggestions"]):
-                        try:
-                            score = int(prediction.get("score", 1))
-                            if score >= score_threshold:
-                                data["code_suggestions"].append(prediction)
-                            else:
-                                get_logger().info(
-                                    f"Removing suggestions {i} from call {j}, because score is {score}, and score_threshold is {score_threshold}",
-                                    artifact=prediction)
-                        except Exception as e:
-                            get_logger().error(f"Error getting PR diff for suggestion {i} in call {j}, error: {e}",
-                                               artifact={"prediction": prediction})
-            self.data = data
+            self.data = data = self._merge_predictions_by_score(prediction_list)
         else:
             get_logger().warning(f"Empty PR diff list")
             self.data = data = None
         return data
+
+    async def prepare_prediction_ensemble(self, ensemble: EnsembleConfig) -> dict:
+        get_logger().info(f"Running ensemble code suggestions with models {ensemble.models}, "
+                          f"consolidator {ensemble.consolidator}")
+        # build the chunks once, with the most token-constrained model, so every
+        # ensemble member and the consolidator see identical chunk boundaries
+        budget_model = pick_min_budget_model(ensemble.models + [ensemble.consolidator])
+        await self._build_diff_chunks(budget_model)
+
+        if not self.patches_diff_list:
+            get_logger().warning(f"Empty PR diff list")
+            self.data = None
+            return None
+
+        get_logger().info(f"Number of PR chunk calls: {len(self.patches_diff_list)}")
+        get_logger().debug(f"PR diff:", artifact=self.patches_diff_list)
+
+        self.ensemble_consolidator = ensemble.consolidator
+        self.ensemble_consolidated = True
+        models_used = set()
+        if get_settings().pr_code_suggestions.parallel_calls:
+            prediction_list = await asyncio.gather(
+                *[self._get_chunk_ensemble_prediction(ensemble, patches_diff,
+                                                      patches_diff_no_line_numbers, models_used)
+                  for patches_diff, patches_diff_no_line_numbers in
+                  zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers)])
+        else:
+            prediction_list = []
+            for patches_diff, patches_diff_no_line_numbers in zip(self.patches_diff_list,
+                                                                  self.patches_diff_list_no_line_numbers):
+                prediction_list.append(
+                    await self._get_chunk_ensemble_prediction(ensemble, patches_diff,
+                                                              patches_diff_no_line_numbers, models_used))
+        self.prediction_list = prediction_list
+
+        if not models_used:
+            raise Exception(f"All ensemble models failed to generate code suggestions: {ensemble.models}")
+        self.ensemble_models_used = [m for m in ensemble.models if m in models_used]
+
+        self.data = data = self._merge_predictions_by_score(prediction_list)
+        # source_model served the consolidating reflection; it is internal
+        # attribution and not part of the published output
+        for suggestion in data.get("code_suggestions", []):
+            suggestion.pop("source_model", None)
+        return data
+
+    async def _get_chunk_ensemble_prediction(self, ensemble: EnsembleConfig, patches_diff: str,
+                                             patches_diff_no_line_numbers: str, models_used: set) -> dict:
+        async def generate(model: str) -> dict:
+            return await self._get_suggestions_prediction(model, patches_diff, patches_diff_no_line_numbers)
+
+        member_results = await gather_ensemble_predictions(generate, ensemble.models)
+        merged = {"code_suggestions": []}
+        seen_summaries = set()
+        for model, member_data in member_results:
+            models_used.add(model)
+            for suggestion in member_data.get("code_suggestions", []):
+                summary = suggestion.get("one_sentence_summary", "")
+                if summary and summary in seen_summaries:
+                    get_logger().debug(f"Skipping exact cross-model duplicate suggestion: {summary}")
+                    continue
+                seen_summaries.add(summary)
+                suggestion["source_model"] = model
+                merged["code_suggestions"].append(suggestion)
+
+        if merged["code_suggestions"]:
+            # one consolidating reflection per chunk: scores, line numbers, and
+            # cross-model near-duplicate removal, all by the consolidator model
+            reflected_ok = await self._reflect_and_score(
+                merged, patches_diff, model=ensemble.consolidator,
+                dedicated_prompt="pr_code_suggestions_reflect_consolidate_prompt")
+            if not reflected_ok:
+                self.ensemble_consolidated = False
+        return merged
 
     async def convert_to_decoupled_with_line_numbers(self, patches_diff_list_no_line_numbers, model) -> List[str]:
         with get_logger().contextualize(sub_feature='convert_to_decoupled_with_line_numbers'):
