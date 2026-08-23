@@ -1,9 +1,7 @@
-import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
-from pr_agent.algo.repo_context.agent_planner import parse_planner_actions
 from pr_agent.algo.repo_context.symbol_extractor import extract_changed_symbols
 
 
@@ -31,33 +29,26 @@ class RepoContextBuilder:
         self,
         workspace_session: Any,
         searcher: Any,
-        planner: Callable[[RepoContextBundle, int], Any] | None = None,
-        fail_open: bool = True,
+        raise_on_error: bool = False,
     ):
         self.workspace_session = workspace_session
         self.searcher = searcher
-        self.planner = planner
-        self.fail_open = fail_open
+        self.raise_on_error = raise_on_error
 
     def build(
         self,
         diff_files: list[Any],
         max_wall_time_sec: float = 10,
-        max_agent_rounds: int = 1,
         max_queries_per_round: int = 5,
     ) -> RepoContextBundle:
         started_at = time.monotonic()
         try:
             bundle = RepoContextBundle(status="ok")
             self._add_seed_context(bundle, diff_files, max_queries_per_round, started_at, max_wall_time_sec)
-            for round_index in range(max_agent_rounds):
-                if self._deadline_passed(started_at, max_wall_time_sec):
-                    break
-                self._run_agent_round(bundle, round_index, max_queries_per_round)
             bundle.snippets = self._dedupe_and_rank(bundle.snippets)
             return bundle
         except Exception as exc:
-            if self.fail_open:
+            if self.raise_on_error:
                 raise
             return RepoContextBundle(status="unavailable", reason=str(exc))
 
@@ -115,53 +106,6 @@ class RepoContextBuilder:
             return extract_changed_symbols(diff_files, max_symbols=limit)
         except Exception:
             return []
-
-    def _run_agent_round(self, bundle: RepoContextBundle, round_index: int, limit: int) -> None:
-        if not self.planner:
-            return
-        planned = self.planner(bundle, round_index)
-        if isinstance(planned, str):
-            actions = parse_planner_actions(planned, limit)
-        else:
-            actions = parse_planner_actions(json.dumps({"actions": list(planned or [])}), limit)
-        for action in actions[:limit]:
-            self._run_action(bundle, action, limit)
-
-    def _run_action(self, bundle: RepoContextBundle, action: dict[str, Any], limit: int) -> None:
-        action_type = action.get("type")
-        if action_type == "find_references":
-            self._extend_snippets(bundle, self.searcher.find_references(action.get("symbol") or action, limit=limit))
-        elif action_type == "search_text":
-            self._extend_snippets(bundle, self.searcher.search_text(action.get("query", ""), limit=limit))
-        elif action_type == "find_importers":
-            self._extend_snippets(bundle, self.searcher.find_importers(action.get("path", ""), limit=limit))
-        elif action_type == "find_tests":
-            self._extend_snippets(
-                bundle,
-                self.searcher.find_tests(action.get("path", ""), limit=limit),
-                context_type="verification",
-            )
-        elif action_type == "open_file":
-            self._open_file(bundle, action)
-
-    def _open_file(self, bundle: RepoContextBundle, action: dict[str, Any]) -> None:
-        path = action.get("path")
-        if not path:
-            return
-        start = action.get("start")
-        end = action.get("end")
-        content = self.workspace_session.open_file(path, start=start, end=end)
-        bundle.snippets.append(
-            RepoContextSnippet(
-                repo=getattr(self.workspace_session, "repo_label", "primary"),
-                repo_label=getattr(self.workspace_session, "repo_label", "primary"),
-                path=path,
-                start=start or 1,
-                end=end or start or 1,
-                content=content,
-                score=60,
-            )
-        )
 
     def _extend_snippets(
         self,

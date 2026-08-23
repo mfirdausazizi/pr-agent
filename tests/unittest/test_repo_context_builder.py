@@ -77,7 +77,6 @@ def test_builder_deterministic_seed_includes_db_delete_caller_snippet():
                 filename="app/db.py",
             )
         ],
-        max_agent_rounds=0,
     )
 
     assert bundle.status == "ok"
@@ -98,7 +97,6 @@ def test_builder_includes_reference_audit_before_changed_symbol_snippets():
                 filename="app/db.py",
             )
         ],
-        max_agent_rounds=0,
     )
 
     audit_index = next(index for index, snippet in enumerate(bundle.snippets) if snippet.context_type == "audit")
@@ -129,7 +127,6 @@ def test_builder_expands_reference_limit_for_changed_symbols():
                 filename="app/db.py",
             )
         ],
-        max_agent_rounds=0,
         max_queries_per_round=5,
     )
 
@@ -145,7 +142,7 @@ def test_builder_falls_back_to_unavailable_bundle_when_search_fails():
     builder = RepoContextBuilder(
         workspace_session=FakeSession(),
         searcher=FailingSearcher(),
-        fail_open=False,
+        raise_on_error=False,
     )
 
     bundle = builder.build(diff_files=[{"path": "app/db.py", "changed_ranges": [{"start": 1, "end": 2}]}])
@@ -155,48 +152,18 @@ def test_builder_falls_back_to_unavailable_bundle_when_search_fails():
     assert "index unavailable" in bundle.reason
 
 
-class Planner:
-    def __call__(self, bundle, round_index):
-        raise RuntimeError("planner down")
-
-
-def test_builder_falls_back_when_planner_fails():
+def test_builder_raises_when_raise_on_error_and_search_fails():
     builder = RepoContextBuilder(
         workspace_session=FakeSession(),
-        searcher=FakeSearcher(),
-        planner=Planner(),
-        fail_open=False,
+        searcher=FailingSearcher(),
+        raise_on_error=True,
     )
 
-    bundle = builder.build(
-        diff_files=[{"path": "app/db.py", "changed_ranges": [{"start": 1, "end": 2}]}],
-        max_agent_rounds=1,
-    )
-
-    assert bundle.status == "unavailable"
-    assert "planner down" in bundle.reason
-
-
-class UnsafePlanner:
-    def __call__(self, bundle, round_index):
-        return [{"type": "open_file", "path": "../secret.py"}]
-
-
-def test_builder_rejects_unsafe_planner_actions_before_opening_files():
-    builder = RepoContextBuilder(
-        workspace_session=FakeSession(),
-        searcher=FakeSearcher(),
-        planner=UnsafePlanner(),
-        fail_open=False,
-    )
-
-    bundle = builder.build(
-        diff_files=[{"path": "app/db.py", "changed_ranges": [{"start": 1, "end": 2}]}],
-        max_agent_rounds=1,
-    )
-
-    assert bundle.status == "unavailable"
-    assert "Unsafe repo path" in bundle.reason
+    try:
+        builder.build(diff_files=[{"path": "app/db.py", "changed_ranges": [{"start": 1, "end": 2}]}])
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as exc:
+        assert "index unavailable" in str(exc)
 
 
 def test_builder_stops_seed_when_wall_time_exceeded(monkeypatch):
@@ -215,7 +182,7 @@ def test_builder_stops_seed_when_wall_time_exceeded(monkeypatch):
         {"name": "second", "path": "b.py"},
     ]
 
-    bundle = builder.build(diff_files=[], max_agent_rounds=0, max_wall_time_sec=10)
+    bundle = builder.build(diff_files=[], max_wall_time_sec=10)
 
     assert bundle.status == "ok"
     assert audits == ["first"]

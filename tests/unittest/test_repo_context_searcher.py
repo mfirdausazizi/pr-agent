@@ -89,7 +89,6 @@ def test_production_searcher_and_builder_find_db_delete_call_site(tmp_path):
         builder = RepoContextBuilder(workspace_session=session, searcher=searcher)
         bundle = builder.build(
             diff_files=[{"path": "app/db.py", "changed_ranges": [{"start": 1, "end": 2}]}],
-            max_agent_rounds=0,
         )
 
     assert bundle.status == "ok"
@@ -152,7 +151,7 @@ def test_production_builder_finds_js_callers_for_changed_function_body(tmp_path)
     with RepoWorkspaceManager().create_session(provider) as session:
         searcher = RepoContextSearcher(session)
         builder = RepoContextBuilder(workspace_session=session, searcher=searcher)
-        bundle = builder.build(diff_files=[diff_file], max_agent_rounds=0)
+        bundle = builder.build(diff_files=[diff_file])
 
     assert bundle.status == "ok"
     assert any(

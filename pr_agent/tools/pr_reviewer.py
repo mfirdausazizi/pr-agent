@@ -172,7 +172,7 @@ class PRReviewer:
             diff_files = self.git_provider.get_diff_files()
             searcher = self._build_repo_context_searcher(workspace_session)
             builder = self._instantiate_repo_context_component(RepoContextBuilder, [
-                {"workspace_session": workspace_session, "searcher": searcher, "fail_open": False},
+                {"workspace_session": workspace_session, "searcher": searcher, "raise_on_error": False},
                 {"workspace_session": workspace_session, "searcher": searcher},
                 {"workspace_session": workspace_session, "settings": get_settings().repo_context},
                 {"workspace": workspace_session},
@@ -180,7 +180,6 @@ class PRReviewer:
             ])
             bundle = builder.build(
                 diff_files=diff_files,
-                max_agent_rounds=get_settings().repo_context.get("max_agent_rounds", 1),
                 max_wall_time_sec=get_settings().repo_context.get("max_wall_time_sec", 10),
             )
             self.vars.update(self._format_repo_context_vars(get_settings().config.model, bundle))
