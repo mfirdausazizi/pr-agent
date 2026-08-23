@@ -49,7 +49,7 @@ class RepoContextBuilder:
         started_at = time.monotonic()
         try:
             bundle = RepoContextBundle(status="ok")
-            self._add_seed_context(bundle, diff_files, max_queries_per_round)
+            self._add_seed_context(bundle, diff_files, max_queries_per_round, started_at, max_wall_time_sec)
             for round_index in range(max_agent_rounds):
                 if self._deadline_passed(started_at, max_wall_time_sec):
                     break
@@ -61,9 +61,12 @@ class RepoContextBuilder:
                 raise
             return RepoContextBundle(status="unavailable", reason=str(exc))
 
-    def _add_seed_context(self, bundle: RepoContextBundle, diff_files: list[Any], limit: int) -> None:
+    def _add_seed_context(self, bundle: RepoContextBundle, diff_files: list[Any], limit: int,
+                          started_at: float, max_wall_time_sec: float) -> None:
         changed_symbols = self._extract_changed_symbols(diff_files, limit)
         for symbol in changed_symbols:
+            if self._deadline_passed(started_at, max_wall_time_sec):
+                return
             reference_limit = max(limit * 2, 10)
             if hasattr(self.searcher, "find_reference_audit"):
                 self._extend_snippets(
@@ -86,6 +89,8 @@ class RepoContextBuilder:
             return
 
         for diff_file in diff_files:
+            if self._deadline_passed(started_at, max_wall_time_sec):
+                return
             path = _get(diff_file, "path") or _get(diff_file, "filename") or _get(diff_file, "head_file")
             if not path:
                 continue

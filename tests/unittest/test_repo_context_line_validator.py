@@ -81,3 +81,37 @@ def test_line_validator_handles_renamed_and_new_files():
     assert issues[0]["relevant_file"] == "renamed.py"
     assert issues[0]["start_line"] == 1
     assert issues[1]["relevant_file"] == "new_file.py"
+
+
+def test_line_validator_ignores_no_newline_marker_before_added_line():
+    data = {"review": {"key_issues_to_review": [
+        {"relevant_file": "app.py", "issue_header": "Bug", "issue_content": "content", "start_line": 1, "end_line": 1},
+    ]}}
+    diff_files = [_file_patch("""@@ -1 +1 @@
+-old
+\\ No newline at end of file
++new
+\\ No newline at end of file
+""")]
+
+    validate_key_issues_to_review(data, diff_files)
+
+    assert data["review"]["key_issues_to_review"][0]["start_line"] == 1
+    assert data["review"]["key_issues_to_review"][0]["end_line"] == 1
+
+
+def test_line_validator_ignores_no_newline_marker_after_added_line():
+    data = {"review": {"key_issues_to_review": [
+        {"relevant_file": "app.py", "issue_header": "Bug", "issue_content": "content", "start_line": 2, "end_line": 2},
+    ]}}
+    diff_files = [_file_patch("""@@ -1,1 +1,2 @@
+ keep
++added
+\\ No newline at end of file
+""")]
+
+    validate_key_issues_to_review(data, diff_files)
+
+    issue = data["review"]["key_issues_to_review"][0]
+    assert issue["start_line"] == 2
+    assert issue["end_line"] == 2

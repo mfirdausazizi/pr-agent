@@ -188,6 +188,31 @@ async def test_run_builds_repo_context_when_enabled_and_cleans_workspace(monkeyp
     cleanup.assert_called_once()
 
 
+async def test_run_skips_repo_context_when_incremental_has_no_new_files(monkeypatch):
+    settings = get_settings()
+    original_enabled = settings.repo_context.enabled
+    original_publish = settings.config.publish_output
+    settings.repo_context.enabled = True
+    settings.config.publish_output = False
+    reviewer = _make_reviewer()
+    reviewer.incremental = SimpleNamespace(is_incremental=True)
+    reviewer._can_run_incremental_review = lambda: True
+    reviewer.git_provider.unreviewed_files_set = {}
+    reviewer.git_provider.get_files.return_value = [MagicMock(filename="app.py", patch="+x")]
+    reviewer.git_provider.previous_review = SimpleNamespace(html_url="https://example/comment/1")
+    reviewer._build_repo_context_bundle = MagicMock()
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+
+    try:
+        await reviewer.run()
+    finally:
+        settings.repo_context.enabled = original_enabled
+        settings.config.publish_output = original_publish
+
+    reviewer._build_repo_context_bundle.assert_not_called()
+    pr_reviewer_module.extract_and_cache_pr_tickets.assert_not_called()
+
+
 async def test_repo_context_builder_error_falls_back_to_diff_only(monkeypatch):
     settings = get_settings()
     original_fallback = settings.repo_context.fallback_to_diff_only

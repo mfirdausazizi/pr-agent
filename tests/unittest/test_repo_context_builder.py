@@ -197,3 +197,25 @@ def test_builder_rejects_unsafe_planner_actions_before_opening_files():
 
     assert bundle.status == "unavailable"
     assert "Unsafe repo path" in bundle.reason
+
+
+def test_builder_stops_seed_when_wall_time_exceeded(monkeypatch):
+    audits = []
+
+    class CountingSearcher(FakeSearcher):
+        def find_reference_audit(self, symbol, limit=5):
+            audits.append(symbol["name"] if isinstance(symbol, dict) else symbol)
+            return super().find_reference_audit(symbol, limit=limit)
+
+    clock = iter([100.0, 100.0, 111.0, 111.0, 111.0])
+    monkeypatch.setattr("pr_agent.algo.repo_context.context_builder.time.monotonic", lambda: next(clock, 111.0))
+    builder = RepoContextBuilder(workspace_session=FakeSession(), searcher=CountingSearcher())
+    builder._extract_changed_symbols = lambda *_args, **_kwargs: [
+        {"name": "first", "path": "a.py"},
+        {"name": "second", "path": "b.py"},
+    ]
+
+    bundle = builder.build(diff_files=[], max_agent_rounds=0, max_wall_time_sec=10)
+
+    assert bundle.status == "ok"
+    assert audits == ["first"]

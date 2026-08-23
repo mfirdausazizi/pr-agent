@@ -83,6 +83,8 @@ def _parse_added_hunks(filename: str, patch: str) -> list[HunkAddedLines]:
             continue
         if current_hunk_start is None:
             continue
+        if line.startswith("\\"):
+            continue
         if line.startswith("+") and not line.startswith("+++"):
             current_added_lines.append(new_line)
             new_line += 1

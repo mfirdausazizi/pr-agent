@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import datetime
 import importlib
@@ -180,6 +181,7 @@ class PRReviewer:
             bundle = builder.build(
                 diff_files=diff_files,
                 max_agent_rounds=get_settings().repo_context.get("max_agent_rounds", 1),
+                max_wall_time_sec=get_settings().repo_context.get("max_wall_time_sec", 10),
             )
             self.vars.update(self._format_repo_context_vars(get_settings().config.model, bundle))
             return bundle
@@ -408,11 +410,6 @@ class PRReviewer:
                                 'config': dict(get_settings().config)}
             get_logger().debug("Relevant configs", artifacts=relevant_configs)
 
-            # ticket extraction if exists
-            await extract_and_cache_pr_tickets(self.git_provider, self.vars)
-            if get_settings().get("repo_context.enabled", False):
-                self.repo_context_bundle = self._build_repo_context_bundle()
-
             if self.incremental.is_incremental and hasattr(
                     self.git_provider, "unreviewed_files_set") and not self.git_provider.unreviewed_files_set:
                 get_logger().info(f"Incremental review is enabled for {self.pr_url} but there are no new files")
@@ -423,6 +420,11 @@ class PRReviewer:
                     self.git_provider.publish_comment(
                         "Incremental Review Skipped\n" f"No files were changed since the [previous PR Review]({previous_review_url})")  # noqa: E501
                 return None
+
+            # ticket extraction if exists
+            await extract_and_cache_pr_tickets(self.git_provider, self.vars)
+            if get_settings().get("repo_context.enabled", False):
+                self.repo_context_bundle = await asyncio.to_thread(self._build_repo_context_bundle)
 
             if get_settings().config.publish_output and not get_settings().config.get('is_auto_command', False):
                 self.git_provider.publish_comment("Preparing review...", is_temporary=True)
