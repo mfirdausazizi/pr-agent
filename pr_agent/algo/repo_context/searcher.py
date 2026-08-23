@@ -1,0 +1,565 @@
+import fnmatch
+import re
+import time
+from pathlib import Path
+
+from pr_agent.algo.repo_context.models import RepoContextSnippet, WorkspaceRepo
+from pr_agent.algo.repo_context.safe_paths import read_safe_text
+from pr_agent.algo.repo_context.snippet_extractor import extract_snippet
+
+
+def _matches_any(path: str, globs: list[str] | tuple[str, ...] | None) -> bool:
+    return any(fnmatch.fnmatch(path, pattern) for pattern in globs or [])
+
+
+def _is_included(path: str, include_globs: list[str] | tuple[str, ...] | None) -> bool:
+    if not include_globs:
+        return True
+    return _matches_any(path, include_globs)
+
+
+def search_text(
+    repos: list[WorkspaceRepo],
+    query: str,
+    max_results: int,
+    include_globs: list[str] | tuple[str, ...] | None = None,
+    exclude_globs: list[str] | tuple[str, ...] | None = None,
+    timeout_sec: int = 10,
+    max_files_scanned: int = 12000,
+    max_file_bytes: int = 200000,
+) -> list[RepoContextSnippet]:
+    if not query or max_results <= 0 or max_files_scanned <= 0:
+        return []
+
+    start_time = time.monotonic()
+    results: list[RepoContextSnippet] = []
+    files_scanned = 0
+
+    for repo in repos:
+        for rel_path in sorted(repo.tracked_files):
+            if files_scanned >= max_files_scanned:
+                return results
+            if time.monotonic() - start_time > timeout_sec:
+                return results
+            if not _is_included(rel_path, include_globs) or _matches_any(rel_path, exclude_globs):
+                continue
+
+            files_scanned += 1
+            try:
+                text = read_safe_text(repo.root, rel_path, repo.tracked_files, exclude_globs, max_file_bytes)
+            except ValueError:
+                continue
+
+            for line_index, line in enumerate(text.splitlines(), start=1):
+                if query not in line:
+                    continue
+                snippet = extract_snippet(
+                    repo.name,
+                    repo.root,
+                    rel_path,
+                    line_index,
+                    2,
+                    repo.tracked_files,
+                    exclude_globs,
+                    max_file_bytes,
+                )
+                snippet.reason = f"matched query on line {line_index}"
+                snippet.score = line.count(query)
+                results.append(snippet)
+                if len(results) >= max_results:
+                    return results
+    return results
+
+
+class RepoContextSearcher:
+    def __init__(self, workspace_session=None, workspace=None, settings=None):
+        self.workspace_session = workspace_session or workspace
+        self.settings = settings or {}
+        self.include_globs = self.settings.get("included_globs") or self.settings.get("include_globs") or []
+        self.exclude_globs = self.settings.get("excluded_globs") or self.settings.get("exclude_globs") or []
+        self.max_file_bytes = self.settings.get("max_file_bytes", 200000)
+        self.timeout_sec = self.settings.get("search_timeout_sec", 10)
+        self.max_files_scanned = self.settings.get("max_files_scanned", 12000)
+
+    def find_symbols(self, symbols=None, limit=20, **kwargs):
+        path = symbols if isinstance(symbols, str) else kwargs.get("path")
+        if not path:
+            return []
+        start_line = kwargs.get("start_line") or 1
+        end_line = kwargs.get("end_line") or start_line
+        repo = self._primary_repo()
+        if not repo:
+            return []
+        try:
+            text = read_safe_text(repo.root, path, repo.tracked_files, self.exclude_globs, self.max_file_bytes)
+        except ValueError:
+            return []
+        lines = text.splitlines()
+        selected = lines[max(1, int(start_line)) - 1:int(end_line or start_line)]
+        names = []
+        for offset, line in enumerate(selected, start=max(1, int(start_line))):
+            found = self._symbols_from_line(line)
+            for name in found:
+                names.append({"name": name, "path": path, "start": offset, "end": offset})
+                if len(names) >= limit:
+                    return names
+        return names
+
+    def find_references(self, symbol, limit=5):
+        name = self._symbol_name(symbol)
+        if not name:
+            return []
+        snippets = self.search_text(name, limit=max(limit * 10, limit, 50))
+        symbol_path = _symbol_path(symbol)
+        ranked = sorted(
+            snippets,
+            key=lambda snippet: (
+                snippet.path == symbol_path,
+                -self._reference_score(name, snippet.content),
+                snippet.path,
+                snippet.start_line,
+            ),
+        )
+        non_test_ranked = [snippet for snippet in ranked if not self._looks_like_test_path(snippet.path)]
+        candidates = non_test_ranked or ranked
+        other_path_candidates = [snippet for snippet in candidates if snippet.path != symbol_path]
+        return self._diversify_by_path(other_path_candidates or candidates, limit)
+
+    def find_reference_audit(self, symbol, limit=20):
+        name = self._symbol_name(symbol)
+        if not name:
+            return None
+
+        start_time = time.monotonic()
+        files_scanned = 0
+        total_references = 0
+        counts_by_path: dict[tuple[str, str], int] = {}
+        call_shape_counts = {"array": 0, "object": 0, "missing": 0, "other": 0, "unknown": 0}
+        call_shape_examples: dict[str, list[str]] = {"object": [], "missing": [], "other": [], "unknown": []}
+        partial_reasons = []
+        max_occurrences = self.settings.get("max_reference_audit_occurrences", 50000)
+
+        for repo in self._workspace_repos():
+            for rel_path in sorted(repo.tracked_files):
+                if files_scanned >= self.max_files_scanned:
+                    partial_reasons.append("max_files_scanned reached")
+                    return self._reference_audit_snippet(
+                        name,
+                        files_scanned,
+                        total_references,
+                        counts_by_path,
+                        call_shape_counts,
+                        call_shape_examples,
+                        partial_reasons,
+                        limit,
+                    )
+                if time.monotonic() - start_time > self.timeout_sec:
+                    partial_reasons.append("timeout reached")
+                    return self._reference_audit_snippet(
+                        name,
+                        files_scanned,
+                        total_references,
+                        counts_by_path,
+                        call_shape_counts,
+                        call_shape_examples,
+                        partial_reasons,
+                        limit,
+                    )
+                if not _is_included(rel_path, self.include_globs) or _matches_any(rel_path, self.exclude_globs):
+                    continue
+
+                files_scanned += 1
+                try:
+                    text = read_safe_text(
+                        repo.root,
+                        rel_path,
+                        repo.tracked_files,
+                        self.exclude_globs,
+                        self.max_file_bytes,
+                    )
+                except ValueError:
+                    continue
+
+                reference_count = self._exact_reference_count(name, text)
+                if reference_count <= 0:
+                    continue
+                counts_by_path[(repo.name, rel_path)] = reference_count
+                total_references += reference_count
+                self._audit_call_argument_shapes(
+                    name, text, rel_path, call_shape_counts, call_shape_examples
+                )
+                if total_references >= max_occurrences:
+                    partial_reasons.append("occurrence cap reached")
+                    return self._reference_audit_snippet(
+                        name,
+                        files_scanned,
+                        total_references,
+                        counts_by_path,
+                        call_shape_counts,
+                        call_shape_examples,
+                        partial_reasons,
+                        limit,
+                    )
+
+        return self._reference_audit_snippet(
+            name,
+            files_scanned,
+            total_references,
+            counts_by_path,
+            call_shape_counts,
+            call_shape_examples,
+            partial_reasons,
+            limit,
+        )
+
+    def find_importers(self, symbol, limit=5):
+        path = symbol.get("path") if isinstance(symbol, dict) else str(symbol or "")
+        if not path:
+            return []
+        module_name = Path(path).stem
+        queries = [f"import {module_name}", f"from {path.removesuffix('.py').replace('/', '.')} import"]
+        snippets = []
+        seen = set()
+        for query in queries:
+            for snippet in self.search_text(query, limit=limit):
+                key = (snippet.repo_name, snippet.path, snippet.start_line, snippet.end_line)
+                if key in seen or snippet.path == path:
+                    continue
+                seen.add(key)
+                snippet.reason = f"imports {path}"
+                snippets.append(snippet)
+                if len(snippets) >= limit:
+                    return snippets
+        return snippets
+
+    def find_tests(self, symbol, limit=5):
+        names = [self._symbol_name(symbol)]
+        if isinstance(symbol, str) and "/" in symbol:
+            names.extend(item["name"] for item in self.find_symbols(symbol, limit=limit))
+        names.append(Path(str(symbol or "")).stem)
+        names = [name for name in names if name]
+        if not names:
+            return []
+        snippets = []
+        seen = set()
+        for name in names:
+            for snippet in self.search_text(name, limit=limit * 2):
+                key = (snippet.repo_name, snippet.path, snippet.start_line, snippet.end_line)
+                if key in seen or not self._looks_like_test_path(snippet.path):
+                    continue
+                seen.add(key)
+                snippet.reason = f"test reference for {name}"
+                snippet.context_type = "verification"
+                snippets.append(snippet)
+                if len(snippets) >= limit:
+                    return snippets
+        return snippets
+
+    def search_text(self, query, limit=5):
+        return search_text(
+            self._workspace_repos(),
+            query,
+            max_results=limit,
+            include_globs=self.include_globs,
+            exclude_globs=self.exclude_globs,
+            timeout_sec=self.timeout_sec,
+            max_files_scanned=self.max_files_scanned,
+            max_file_bytes=self.max_file_bytes,
+        )
+
+    def open_file(self, path, repo_name=None):
+        if hasattr(self.workspace_session, "open_file"):
+            return self.workspace_session.open_file(path, repo_name=repo_name)
+        repo = self._repo_by_name(repo_name)
+        if not repo:
+            raise ValueError(f"Repository is unavailable: {repo_name or 'primary'}")
+        return read_safe_text(repo.root, path, repo.tracked_files, self.exclude_globs, self.max_file_bytes)
+
+    def _workspace_repos(self):
+        repos = []
+        session_repos = getattr(self.workspace_session, "repos", None)
+        if session_repos is None:
+            primary = getattr(self.workspace_session, "primary", None)
+            session_repos = [primary, *getattr(self.workspace_session, "external_repos", [])]
+        for repo in session_repos or []:
+            root = getattr(repo, "root", None)
+            if not root or getattr(repo, "status", "ready") != "ready":
+                continue
+            tracked_files = set(getattr(repo, "tracked_files", None) or getattr(repo, "files", []) or [])
+            if not tracked_files:
+                continue
+            repos.append(WorkspaceRepo(getattr(repo, "name", "primary"), Path(root), tracked_files))
+        return repos
+
+    def _primary_repo(self):
+        repos = self._workspace_repos()
+        return repos[0] if repos else None
+
+    def _repo_by_name(self, repo_name):
+        repos = self._workspace_repos()
+        if repo_name is None:
+            return repos[0] if repos else None
+        for repo in repos:
+            if repo.name == repo_name:
+                return repo
+        return None
+
+    @staticmethod
+    def _symbol_name(symbol) -> str:
+        if isinstance(symbol, dict):
+            return symbol.get("name") or symbol.get("symbol") or ""
+        return getattr(symbol, "name", str(symbol or ""))
+
+    @staticmethod
+    def _symbols_from_line(line: str) -> list[str]:
+        definitions = re.findall(r"\b(?:def|class|function)\s+([A-Za-z_][A-Za-z0-9_]*)", line)
+        assignments = re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
+        calls = re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", line)
+        keywords = {"if", "for", "while", "return", "assert"}
+        return [name for name in [*definitions, *assignments, *calls] if name not in keywords]
+
+    @staticmethod
+    def _looks_like_test_path(path: str) -> bool:
+        parts = Path(path).parts
+        name = Path(path).name
+        return "tests" in parts or name.startswith("test_") or name.endswith("_test.py")
+
+    @staticmethod
+    def _reference_score(name: str, content: str) -> int:
+        if re.search(rf"(?:\.|\b){re.escape(name)}\s*\(", content):
+            return 3
+        if re.search(rf"\b{re.escape(name)}\b", content):
+            return 2
+        return 1
+
+    @staticmethod
+    def _exact_reference_count(name: str, content: str) -> int:
+        return len(re.findall(rf"\b{re.escape(name)}\b", content))
+
+    @classmethod
+    def _audit_call_argument_shapes(
+        cls,
+        name: str,
+        content: str,
+        path: str,
+        call_shape_counts: dict[str, int],
+        call_shape_examples: dict[str, list[str]],
+    ) -> None:
+        call_pattern = re.compile(rf"(?<![A-Za-z0-9_$])(?:[A-Za-z_$][A-Za-z0-9_$]*\.)?{re.escape(name)}\s*\(")
+        for line_number, line in enumerate(content.splitlines(), start=1):
+            if name not in line or cls._is_definition_line(name, line):
+                continue
+            for match in call_pattern.finditer(line):
+                shape = cls._classify_second_argument(line, match.end() - 1)
+                call_shape_counts[shape] += 1
+                if shape != "array" and len(call_shape_examples[shape]) < 5:
+                    call_shape_examples[shape].append(f"{path}:{line_number}")
+
+    @staticmethod
+    def _is_definition_line(name: str, line: str) -> bool:
+        escaped_name = re.escape(name)
+        return bool(
+            re.search(rf"\bfunction\s+{escaped_name}\s*\(", line)
+            or re.search(rf"\b{escaped_name}\s*:\s*(?:async\s+)?function\s*\(", line)
+        )
+
+    @classmethod
+    def _classify_second_argument(cls, line: str, open_paren_index: int) -> str:
+        args_text = cls._extract_single_line_arguments(line, open_paren_index)
+        if args_text is None:
+            return "unknown"
+        args = cls._split_top_level_arguments(args_text)
+        if args is None:
+            return "unknown"
+        if len(args) < 2:
+            return "missing"
+        second_arg = args[1].lstrip()
+        if not second_arg:
+            return "other"
+        if second_arg.startswith("["):
+            return "array"
+        if second_arg.startswith("{"):
+            return "object"
+        return "other"
+
+    @staticmethod
+    def _extract_single_line_arguments(line: str, open_paren_index: int) -> str | None:
+        depth = 0
+        quote = ""
+        escaped = False
+        for index in range(open_paren_index, len(line)):
+            char = line[index]
+            if quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = ""
+                continue
+            if char in {"'", '"', "`"}:
+                quote = char
+                continue
+            if char in "([{":
+                depth += 1
+                continue
+            if char in ")]}":
+                depth -= 1
+                if depth == 0 and char == ")":
+                    return line[open_paren_index + 1:index]
+                if depth < 0:
+                    return None
+        return None
+
+    @staticmethod
+    def _split_top_level_arguments(args_text: str) -> list[str] | None:
+        args = []
+        start = 0
+        depth = 0
+        quote = ""
+        escaped = False
+        for index, char in enumerate(args_text):
+            if quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = ""
+                continue
+            if char in {"'", '"', "`"}:
+                quote = char
+                continue
+            if char in "([{":
+                depth += 1
+                continue
+            if char in ")]}":
+                depth -= 1
+                if depth < 0:
+                    return None
+                continue
+            if char == "," and depth == 0:
+                args.append(args_text[start:index].strip())
+                start = index + 1
+        if quote or depth != 0:
+            return None
+        trailing = args_text[start:].strip()
+        if trailing or args_text.strip():
+            args.append(trailing)
+        return args
+
+    @staticmethod
+    def _reference_audit_snippet(
+        name: str,
+        files_scanned: int,
+        total_references: int,
+        counts_by_path: dict[tuple[str, str], int],
+        call_shape_counts: dict[str, int],
+        call_shape_examples: dict[str, list[str]],
+        partial_reasons: list[str],
+        limit: int,
+    ) -> RepoContextSnippet:
+        completed = not partial_reasons
+        status = "completed scan" if completed else "partial scan"
+        reason_text = "" if completed else f" ({', '.join(dict.fromkeys(partial_reasons))})"
+        path_counts = sorted(counts_by_path.items(), key=lambda item: (-item[1], item[0][0], item[0][1]))
+        max_paths_reported = max(limit, 10)
+        path_summary = ", ".join(f"{path} ({count})" for (_repo_name, path), count in path_counts[:max_paths_reported])
+        if len(path_counts) > max_paths_reported:
+            path_summary = f"{path_summary}, ..."
+        if not path_summary:
+            path_summary = "none"
+
+        content = (
+            f"Exact reference audit for {name}: {status} of tracked, non-excluded files{reason_text}. "
+            f"Scanned {files_scanned} files. Found {total_references} references across {len(path_counts)} files: "
+            f"{path_summary}."
+        )
+        call_shape_summary = RepoContextSearcher._call_shape_summary(
+            call_shape_counts, call_shape_examples, completed
+        )
+        if call_shape_summary:
+            content = f"{content} {call_shape_summary}"
+        return RepoContextSnippet(
+            repo_name="primary",
+            path="repo-context-audit",
+            start_line=1,
+            end_line=1,
+            content=content,
+            symbol=name,
+            reason="exact reference audit",
+            source="deterministic",
+            score=1000,
+            context_type="audit",
+        )
+
+    @staticmethod
+    def _call_shape_summary(
+        call_shape_counts: dict[str, int],
+        call_shape_examples: dict[str, list[str]],
+        completed: bool,
+    ) -> str:
+        total_calls = sum(call_shape_counts.values())
+        if total_calls == 0:
+            return ""
+
+        missing_other_count = call_shape_counts["missing"] + call_shape_counts["other"]
+        summary = (
+            f"Call argument shape audit: {call_shape_counts['array']} array-form calls, "
+            f"{call_shape_counts['object']} object-form calls, {missing_other_count} missing/other calls, "
+            f"{call_shape_counts['unknown']} unknown."
+        )
+        if completed and not (
+            call_shape_counts["object"]
+            or call_shape_counts["missing"]
+            or call_shape_counts["other"]
+            or call_shape_counts["unknown"]
+        ):
+            return f"{summary} All detected call sites pass an array as the second argument."
+
+        examples = []
+        for shape in ("object", "missing", "other", "unknown"):
+            if call_shape_examples[shape]:
+                examples.append(f"{shape}: {', '.join(call_shape_examples[shape])}")
+        if examples:
+            return f"{summary} Non-array or unknown examples: {'; '.join(examples)}."
+        return summary
+
+    @staticmethod
+    def _diversify_by_path(snippets: list[RepoContextSnippet], limit: int) -> list[RepoContextSnippet]:
+        if limit <= 0:
+            return []
+        by_path: dict[str, list[RepoContextSnippet]] = {}
+        path_order = []
+        for snippet in snippets:
+            if snippet.path not in by_path:
+                by_path[snippet.path] = []
+                path_order.append(snippet.path)
+            by_path[snippet.path].append(snippet)
+
+        selected = []
+        while len(selected) < limit and by_path:
+            progressed = False
+            for path in list(path_order):
+                path_snippets = by_path.get(path)
+                if not path_snippets:
+                    continue
+                selected.append(path_snippets.pop(0))
+                progressed = True
+                if not path_snippets:
+                    del by_path[path]
+                    path_order.remove(path)
+                if len(selected) >= limit:
+                    break
+            if not progressed:
+                break
+        return selected
+
+
+def _symbol_path(symbol) -> str:
+    if isinstance(symbol, dict):
+        return symbol.get("path") or ""
+    return getattr(symbol, "path", "")
+
+
+RepositorySearcher = RepoContextSearcher

@@ -17,6 +17,9 @@ def review_consolidate_vars():
         "enable_custom_labels": False, "is_ai_metadata": False,
         "related_tickets": [], "duplicate_prompt_examples": False,
         "date": "2026-06-12",
+        "repo_context": "",
+        "repo_context_status": "unavailable",
+        "consolidation_verification_context": "",
         "model_reviews": "## Review from model 'model-a':\nreview-a-yaml",
     }
 
@@ -37,6 +40,16 @@ def test_review_consolidate_prompt_is_registered_and_renders():
     assert "key_issues_to_review" in rendered_system
     assert "review-a-yaml" in rendered_user
     assert "the-diff" in rendered_user
+    assert "Related Repository Context" not in rendered_user
+
+    variables["repo_context"] = "caller context"
+    variables["repo_context_status"] = "ok"
+    variables["consolidation_verification_context"] = "test context"
+    rendered_user = environment.from_string(user_template).render(variables)
+    assert "Related Repository Context" in rendered_user
+    assert "caller context" in rendered_user
+    assert "Consolidation Verification Context" in rendered_user
+    assert "test context" in rendered_user
 
     # Re-render with duplicate_prompt_examples and related_tickets to test new blocks
     variables["duplicate_prompt_examples"] = True
@@ -44,6 +57,22 @@ def test_review_consolidate_prompt_is_registered_and_renders():
     rendered = environment.from_string(user_template).render(variables)
     assert "(replace '...'" in rendered
     assert "Ticket Requirements:" in rendered
+
+
+def test_review_prompt_renders_strictly_with_repo_context_vars():
+    settings = get_settings()
+    environment = Environment(undefined=StrictUndefined)
+    variables = review_consolidate_vars()
+    variables.pop("model_reviews")
+
+    rendered_without_context = environment.from_string(settings.pr_review_prompt.user).render(variables)
+    assert "Related Repository Context" not in rendered_without_context
+
+    variables["repo_context"] = "repository evidence"
+    variables["repo_context_status"] = "ok"
+    rendered_with_context = environment.from_string(settings.pr_review_prompt.user).render(variables)
+    assert "Related Repository Context" in rendered_with_context
+    assert "repository evidence" in rendered_with_context
 
 
 def test_reflect_consolidate_prompt_is_registered_and_renders():

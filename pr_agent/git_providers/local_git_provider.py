@@ -62,6 +62,9 @@ class LocalGitProvider(GitProvider):
             return False
         return True
 
+    def get_repo_context_local_root(self) -> str | None:
+        return str(self.repo_path)
+
     def get_diff_files(self) -> list[FilePatchInfo]:
         diffs = self.repo.head.commit.diff(
             self.repo.merge_base(self.repo.head, self.repo.branches[self.target_branch_name]),
@@ -119,7 +122,12 @@ class LocalGitProvider(GitProvider):
             # Write the string to the file
             file.write(pr_comment)
 
-    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):
+    def publish_inline_comment(
+            self,
+            body: str,
+            relevant_file: str,
+            relevant_line_in_file: str,
+            original_suggestion=None):
         raise NotImplementedError('Publishing inline comments is not implemented for the local git provider')
 
     def publish_inline_comments(self, comments: list[dict]):
@@ -177,7 +185,7 @@ class LocalGitProvider(GitProvider):
         # Get the commit messages and concatenate
         commit_messages = " ".join([commit.message for commit in commits_diff])
         # TODO Handle the description better - maybe use gpt-3.5 summarisation here?
-        return commit_messages[:200]  # Use max 200 characters
+        return commit_messages[: 200]  # Use max 200 characters
 
     def get_pr_title(self):
         """

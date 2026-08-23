@@ -19,6 +19,8 @@ def full_review_vars():
         "enable_custom_labels": False, "is_ai_metadata": False,
         "related_tickets": [], "duplicate_prompt_examples": False,
         "date": "2026-06-12",
+        "repo_context": "", "repo_context_status": "unavailable",
+        "consolidation_verification_context": "",
     }
 
 
@@ -35,6 +37,7 @@ def build_reviewer():
     reviewer.ensemble_models_used = []
     reviewer.ensemble_consolidator = ""
     reviewer.ensemble_consolidated = False
+    reviewer.repo_context_bundle = None
     return reviewer
 
 
@@ -133,6 +136,39 @@ async def test_ensemble_skips_models_with_empty_diff(monkeypatch):
     assert reviewer.ensemble_models_used == ["model-b"]
 
 
+async def test_ensemble_get_pr_diff_uses_per_model_repo_context_token_handler(monkeypatch):
+    reviewer = build_reviewer()
+    reviewer.repo_context_bundle = MagicMock()
+    reviewer._format_repo_context_vars = MagicMock(side_effect=lambda model: {
+        **reviewer.vars,
+        "repo_context": f"context for {model}",
+        "repo_context_status": "ok",
+        "consolidation_verification_context": "",
+    })
+    token_handler_vars = []
+
+    def fake_token_handler(pr, variables, system, user):
+        token_handler_vars.append(variables)
+        return MagicMock()
+
+    def fake_get_pr_diff(provider, handler, model, **kwargs):
+        assert token_handler_vars[-1]["repo_context"] == f"context for {model}"
+        return f"diff-{model}"
+
+    monkeypatch.setattr(pr_reviewer_module, "TokenHandler", fake_token_handler)
+    monkeypatch.setattr(pr_reviewer_module, "get_pr_diff", fake_get_pr_diff)
+    reviewer._get_prediction_for_diff = AsyncMock(side_effect=lambda model, diff, variables=None: f"review-{model}")
+    reviewer._consolidate_predictions = AsyncMock(return_value="consolidated")
+
+    await reviewer._prepare_prediction_ensemble(
+        EnsembleConfig(models=["model-a", "model-b"], consolidator="model-c"))
+
+    assert [vars_["repo_context"] for vars_ in token_handler_vars[:2]] == [
+        "context for model-a", "context for model-b",
+    ]
+    assert reviewer._get_prediction_for_diff.await_args_list[0].args[2]["repo_context"] == "context for model-a"
+
+
 async def test_ensemble_skips_models_whose_diff_budgeting_fails(monkeypatch):
     reviewer = build_reviewer()
 
@@ -174,6 +210,35 @@ async def test_consolidate_predictions_renders_prompts_and_returns_response(monk
     assert "review-b" in kwargs["user"]
     assert "the-diff" in kwargs["user"]
     assert "$PRReview" in kwargs["system"]
+
+
+async def test_consolidate_predictions_accounts_for_reviews_and_repo_context(monkeypatch):
+    reviewer = build_reviewer()
+    reviewer.ai_handler.chat_completion = AsyncMock(return_value=("consolidated-yaml", "stop"))
+    reviewer.repo_context_bundle = MagicMock()
+    reviewer._format_repo_context_vars = MagicMock(return_value={
+        **reviewer.vars,
+        "repo_context": "repo evidence",
+        "repo_context_status": "ok",
+        "consolidation_verification_context": "verification evidence",
+    })
+    token_handler_vars = {}
+
+    def fake_token_handler(pr, variables, system, user):
+        token_handler_vars.update(variables)
+        return MagicMock()
+
+    monkeypatch.setattr(pr_reviewer_module, "TokenHandler", fake_token_handler)
+    monkeypatch.setattr(pr_reviewer_module, "get_pr_diff", lambda *args, **kwargs: "the-diff")
+
+    await reviewer._consolidate_predictions([("model-a", "review-a"), ("model-b", "review-b")], "model-c")
+
+    assert "review-a" in token_handler_vars["model_reviews"]
+    assert token_handler_vars["repo_context"] == "repo evidence"
+    assert token_handler_vars["consolidation_verification_context"] == "verification evidence"
+    kwargs = reviewer.ai_handler.chat_completion.call_args.kwargs
+    assert "repo evidence" in kwargs["user"]
+    assert "verification evidence" in kwargs["user"]
 
 
 async def test_prepare_pr_review_appends_footer_when_ensemble(monkeypatch):

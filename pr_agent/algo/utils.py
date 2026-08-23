@@ -63,6 +63,42 @@ class PRReviewHeader(str, Enum):
     INCREMENTAL = "## Incremental PR Reviewer Guide"
 
 
+REVIEW_METADATA_PREFIX = "<!-- pr-agent-review-metadata:"
+REVIEW_METADATA_SUFFIX = "-->"
+REVIEW_METADATA_RE = re.compile(r"<!--\s*pr-agent-review-metadata:\s*(\{.*?\})\s*-->", re.DOTALL)
+
+
+def append_review_metadata(markdown_text: str, *, reviewed_head_sha: str = None) -> str:
+    if not markdown_text or not isinstance(reviewed_head_sha, str) or not reviewed_head_sha:
+        return markdown_text
+
+    markdown_text = REVIEW_METADATA_RE.sub("", markdown_text).rstrip()
+    metadata = json.dumps({"reviewed_head_sha": reviewed_head_sha}, separators=(",", ":"))
+    return f"{markdown_text}\n\n{REVIEW_METADATA_PREFIX}{metadata}{REVIEW_METADATA_SUFFIX}"
+
+
+def extract_review_metadata(markdown_text: str) -> dict:
+    if not markdown_text:
+        return {}
+
+    matches = REVIEW_METADATA_RE.findall(markdown_text)
+    if not matches:
+        return {}
+
+    try:
+        metadata = json.loads(matches[-1])
+    except Exception:
+        return {}
+
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def extract_reviewed_head_sha(markdown_text: str) -> str:
+    metadata = extract_review_metadata(markdown_text)
+    reviewed_head_sha = metadata.get("reviewed_head_sha")
+    return reviewed_head_sha if isinstance(reviewed_head_sha, str) and reviewed_head_sha else None
+
+
 class ReasoningEffort(str, Enum):
     XHIGH = "xhigh"
     HIGH = "high"
