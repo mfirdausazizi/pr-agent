@@ -72,10 +72,13 @@ PR-Agent automates AI-assisted reviews for pull requests across multiple git pro
   - URL: `https://ahib8a9mgq077qljkszetods.149.118.150.110.sslip.io`.
   - Webhook endpoint: `/api/v1/github_webhooks`.
   - Source: `mfirdausazizi/pr-agent`, branch `feature/agentic-repo-access`, commit
-    `8f86b69dd5c75bd70a2f5040152a18511b1955e4` (merge of `feat/multi-model-ensemble` hardening fixes).
+    `fba1a95f48ebe5c898dc8842e14e5ba2c763cb28` (`fix: close repo-settings tempfile FD after write`;
+    same change is `c331bc02` on `feat/multi-model-ensemble`).
+  - Running container: `ahib8a9mgq077qljkszetods-061003143812`.
   - Build: `/docker/Dockerfile`, target `github_app`, port `3000`.
-  - Latest deployment UUID: `g130n5p6chk3w991owp77s2m`.
-  - Running image: `ahib8a9mgq077qljkszetods:8f86b69dd5c75bd70a2f5040152a18511b1955e4`.
+  - Latest deployment UUID: `3ixquyo2qxtkavhuigfujf8p` (finished 2026-08-23 06:16 UTC).
+  - Running image: `ahib8a9mgq077qljkszetods:fba1a95f48ebe5c898dc8842e14e5ba2c763cb28`.
+  - Previous canary image still on the host: `ahib8a9mgq077qljkszetods:8f86b69dd5c75bd70a2f5040152a18511b1955e4`.
   - `feat/multi-model-ensemble` is merged into fork `main` (merge commit `4571eee6`).
 - Rollback path: the previous app `pr-agent` remains running at
   `https://pr-agent.fatomate.com/api/v1/github_webhooks`. Repoint the GitHub App webhook there to revert.
@@ -108,10 +111,11 @@ PR-Agent automates AI-assisted reviews for pull requests across multiple git pro
   OpenAI-compatible proxy via `OPENAI__API_BASE`, so models use the `openai/` provider namespace. A direct
   `anthropic/claude-opus-4-8` call was tested and failed without Anthropic credentials; do not change the prefix
   unless direct Anthropic credentials are added.
-- Latest verification: `/openapi.json` returned 200; the deployed container imported
-  `pr_agent.algo.repo_context.related_prs` successfully; recent canary logs showed 0 serious error markers; live
-  reviews on `wabot-backend-v3#58`, `wabot_rag#34`, and `wabot-v4#150` logged related PR detections with
-  `refs/pull/.../head` for all configured cross-repo links.
+- Latest verification (2026-08-23): `/openapi.json` returned 200; webhook GET returned 405 (POST-only);
+  the deployed container imported `pr_agent.algo.repo_context.related_prs` and contains the `os.fdopen`
+  repo-settings write; gunicorn workers had 12–15 FDs and 0 leaked `/tmp/*.toml` handles; new-container
+  logs showed 0 error/EMFILE markers. Earlier related-PR detections (`wabot-backend-v3#58`,
+  `wabot_rag#34`, `wabot-v4#150` with `refs/pull/.../head`) were from the previous canary image.
 
 ## Security and Configuration Tips
 
