@@ -574,6 +574,33 @@ repo_key = "repo-only"
     assert get_settings().get(f"{_TEST_SECTION}.repo_key") == "repo-only"
 
 
+def test_apply_repo_settings_closes_temp_toml_fd(settings_sandbox, mock_git_provider, monkeypatch):
+    """Repo-settings mkstemp FD must be closed; unlink-only leaks workers to EMFILE."""
+    created = {}
+    real_mkstemp = git_utils.tempfile.mkstemp
+
+    def capture_mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        created["fd"] = fd
+        return fd, path
+
+    monkeypatch.setattr(git_utils.tempfile, "mkstemp", capture_mkstemp)
+    mock_git_provider["provider"] = _FakeGitProvider(
+        f"""
+[{_TEST_SECTION}]
+repo_key = "repo-only"
+""".encode()
+    )
+    get_settings().set("CONFIG.EXTRA_CONFIG_URL", None)
+
+    apply_repo_settings("https://example.com/pr/1")
+
+    assert get_settings().get(f"{_TEST_SECTION}.repo_key") == "repo-only"
+    assert "fd" in created
+    with pytest.raises(OSError):
+        os.fstat(created["fd"])
+
+
 def test_unreachable_extra_url_does_not_block_repo_settings(
     tmp_path, settings_sandbox, mock_git_provider
 ):
