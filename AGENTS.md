@@ -72,50 +72,60 @@ PR-Agent automates AI-assisted reviews for pull requests across multiple git pro
   - URL: `https://ahib8a9mgq077qljkszetods.149.118.150.110.sslip.io`.
   - Webhook endpoint: `/api/v1/github_webhooks`.
   - Source: `mfirdausazizi/pr-agent`, branch `feature/agentic-repo-access`, commit
-    `fba1a95f48ebe5c898dc8842e14e5ba2c763cb28` (`fix: close repo-settings tempfile FD after write`;
-    same change is `c331bc02` on `feat/multi-model-ensemble`).
-  - Running container: `ahib8a9mgq077qljkszetods-061003143812`.
+    `73f3caee6ac062ff0e1b4b5444b4ad5e3e1bf48d` (P0 scan/anchor bounds + P1 planner removal / `raise_on_error`;
+    also on `feat/multi-model-ensemble` via merge `e8972376`).
+  - Running container: `ahib8a9mgq077qljkszetods-135836484725`.
   - Build: `/docker/Dockerfile`, target `github_app`, port `3000`.
-  - Latest deployment UUID: `3ixquyo2qxtkavhuigfujf8p` (finished 2026-08-23 06:16 UTC).
-  - Running image: `ahib8a9mgq077qljkszetods:fba1a95f48ebe5c898dc8842e14e5ba2c763cb28`.
-  - Previous canary image still on the host: `ahib8a9mgq077qljkszetods:8f86b69dd5c75bd70a2f5040152a18511b1955e4`.
-  - `feat/multi-model-ensemble` is merged into fork `main` (merge commit `4571eee6`).
-- Rollback path: the previous app `pr-agent` remains running at
-  `https://pr-agent.fatomate.com/api/v1/github_webhooks`. Repoint the GitHub App webhook there to revert.
-- Ensemble decision (2026-07-04): run the full 2-model ensemble
-  (`openai/claude-opus-4-8` + `openai/gpt-5.5`) on both PR-open and push triggers; cost/tokens are
-  accepted. Note that `--config.ensemble_models=...` CLI overrides in `push_commands` do NOT take
-  effect: `apply_repo_settings` replays env vars (`CONFIG__ENSEMBLE_MODELS`) as the highest-precedence
-  layer on every request, clobbering the CLI value. If a per-trigger override is ever needed, use the
-  tool-section form (`--pr_reviewer.ensemble_models=...` / `--pr_code_suggestions.ensemble_models=...`),
-  which no env var resets. See `docs/multi-model-ensemble-deep-review-report.md`.
-- Automation config currently set on the canary:
+  - Latest deployment UUID: `qunp4k6dvtbcblo9zsl2xrwn` (finished 2026-08-28 14:04 UTC).
+  - Running image: `ahib8a9mgq077qljkszetods:73f3caee6ac062ff0e1b4b5444b4ad5e3e1bf48d`.
+  - Previous canary images still on the host: `fba1a95f…` (FD-only) and `8f86b69…`.
+  - `feat/multi-model-ensemble` is merged into fork `main` (merge commit `4571eee6`). Repo-context PRs #2 and #3
+    are merged into `feat/multi-model-ensemble` but not into fork `main`.
+- Keep the canary: it is the live GitHub App webhook. The Coolify app `pr-agent` at
+  `https://pr-agent.fatomate.com/api/v1/github_webhooks` tracks **upstream** `the-pr-agent/pr-agent` `main`
+  (idle since June) and does **not** carry ensemble or repo-context. Do not repoint the webhook there
+  unless that app is rebuilt from the fork.
+- Ensemble policy: run the full 2-model ensemble (`openai/claude-opus-5` + `openai/gpt-5.6-sol`) for enabled
+  review tools; cost/tokens are accepted. `--config.ensemble_models=...` CLI overrides in automated commands do
+  not take effect because `apply_repo_settings` replays `CONFIG__ENSEMBLE_MODELS` as the highest-precedence layer.
+  Use tool-section overrides only when no environment variable for that key exists. See
+  `docs/multi-model-ensemble-deep-review-report.md`.
+- Automation and strictness config currently set on the canary:
   - `GITHUB_APP__PR_COMMANDS=["/describe --pr_description.final_update_message=false","/review","/improve"]`
-  - `GITHUB_APP__PUSH_COMMANDS=["/review -i --config.ensemble_models=openai/claude-opus-4-8","/improve --config.ensemble_models=openai/claude-opus-4-8"]`
-    (the `--config.ensemble_models` args are inert per the note above; both triggers run the 2-model ensemble)
+  - `GITHUB_APP__PUSH_COMMANDS=["/review -i"]`
   - `GITHUB_APP__PUSH_TRIGGER_WAIT_FOR_INITIAL_REVIEW=true`
   - `GITHUB_APP__HANDLE_PUSH_TRIGGER=true`
-  - `CONFIG__ENSEMBLE_MODELS=openai/claude-opus-4-8,openai/gpt-5.5`
-  - `CONFIG__ENSEMBLE_CONSOLIDATOR_MODEL=openai/claude-opus-4-8`
-  - `CONFIG__REASONING_EFFORT=xhigh`
+  - `CONFIG__ENSEMBLE_MODELS=openai/claude-opus-5,openai/gpt-5.6-sol`
+  - `CONFIG__ENSEMBLE_CONSOLIDATOR_MODEL=openai/claude-opus-5`
+  - `CONFIG__REASONING_EFFORT=high`
+  - Service-wide reviewer overrides: maximum 2 findings; security and clean-result output retained; tests, effort,
+    split, score, and ticket sections disabled; incremental thresholds are 3 commits or 30 minutes; P0/P1-only
+    evidence rubric. These environment variables intentionally override repository settings for every repo served
+    by this canary.
+  - Service-wide `/improve` overrides: problem-only mode, score threshold 8, silent no-suggestion output, and one
+    history entry.
+  - Exact deployed settings and rollback procedure: `docs/pr-agent-review-strictness-report.md`.
   - `GUNICORN_CMD_ARGS=--timeout 600`
 - Agentic repo context and related-PR detection status:
-  - Repo context is controlled through repository `.pr_agent.toml` files and `pr_agent/settings/configuration.toml`.
+  - Production path is deterministic seed context (audits/refs/importers/tests). The unused LLM planner loop
+    was removed in `73f3caee`.
+  - Repo context is opt-in via repository `.pr_agent.toml` / `pr_agent/settings/configuration.toml`
+    (`repo_context.enabled`). Default is `enabled=false`.
   - Related PR detection is opt-in via `repo_context.include_related_prs=true`.
   - Related PR external checkouts are allowlist-gated through `repo_context.allowed_external_repo_urls`.
   - Related PR refs use `refs/pull/<number>/head`, so cross-repo reviews inspect the related PR head instead of
     only the external repository default branch.
   - The Wabot repositories `fatomate/wabot_rag`, `fatomate/wabot-backend-v3`, and `fatomate/wabot-v4` are configured
     with `include_related_prs=true` and `max_related_prs=2`.
-- Model naming note: the `openai/` prefix on `claude-opus-4-8` is intentional. This deployment routes through an
-  OpenAI-compatible proxy via `OPENAI__API_BASE`, so models use the `openai/` provider namespace. A direct
-  `anthropic/claude-opus-4-8` call was tested and failed without Anthropic credentials; do not change the prefix
-  unless direct Anthropic credentials are added.
-- Latest verification (2026-08-23): `/openapi.json` returned 200; webhook GET returned 405 (POST-only);
-  the deployed container imported `pr_agent.algo.repo_context.related_prs` and contains the `os.fdopen`
-  repo-settings write; gunicorn workers had 12–15 FDs and 0 leaked `/tmp/*.toml` handles; new-container
-  logs showed 0 error/EMFILE markers. Earlier related-PR detections (`wabot-backend-v3#58`,
-  `wabot_rag#34`, `wabot-v4#150` with `refs/pull/.../head`) were from the previous canary image.
+- Model naming note: the `openai/` prefix on Claude models is intentional. This deployment routes through an
+  OpenAI-compatible proxy via `OPENAI__API_BASE`; do not switch to the direct `anthropic/` provider unless direct
+  Anthropic credentials are added.
+- Latest verification (2026-08-28 14:17 UTC): deployment `qunp4k6dvtbcblo9zsl2xrwn` finished on pinned commit
+  `73f3caee`; `/` and `/openapi.json` were healthy; effective Dynaconf values had the expected list, integer, and
+  boolean types; environment replay restored strict values after simulated repository overrides; gunicorn processes
+  held 12–15 FDs with 0 leaked `/tmp/*.toml`; startup error-marker scan was empty. End-to-end `/review` on
+  `fatomate/wabot-v4#491` loaded repository settings and published a 446-character clean review with no tests,
+  effort, or ticket sections and a `No security concerns identified` row; the prior review was 4,448 characters.
 
 ## Security and Configuration Tips
 
