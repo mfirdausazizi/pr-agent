@@ -164,6 +164,16 @@ class GithubProvider(GitProvider):
         self.previous_review = self.get_previous_review(full=True, incremental=True)
         if self.previous_review:
             self.incremental.commits_range = self.get_commit_range()
+            if self.incremental.commits_range and self.incremental.last_seen_commit is None:
+                # Every commit post-dates the review (e.g. the branch was fully rebased), so there
+                # is no baseline commit to diff against. Fall back to a full review rather than
+                # diffing against a None ref, which silently yields empty original content.
+                get_logger().info(
+                    "Incremental review cannot anchor a base commit (no commit predates the "
+                    "previous review); falling back to a full review"
+                )
+                self.incremental.is_incremental = False
+                return
             # Get all files changed during the commit range
             pr_file_map = self._get_pr_file_map()
 
@@ -196,6 +206,13 @@ class GithubProvider(GitProvider):
 
         return pr_file_map
 
+    @staticmethod
+    def _commit_timeline_date(commit):
+        """Prefer the committer date: rebasing rewrites content but preserves the author
+        date, so anchoring on it classifies rewritten commits as already-reviewed."""
+        committer_date = getattr(getattr(commit.commit, 'committer', None), 'date', None)
+        return committer_date or commit.commit.author.date
+
     def get_commit_range(self):
         reviewed_head_sha = extract_reviewed_head_sha(getattr(self.previous_review, "body", ""))
         if reviewed_head_sha:
@@ -210,7 +227,7 @@ class GithubProvider(GitProvider):
         last_review_time = self.previous_review.created_at
         first_new_commit_index = None
         for index in range(len(self.pr_commits) - 1, -1, -1):
-            if self.pr_commits[index].commit.author.date > last_review_time:
+            if self._commit_timeline_date(self.pr_commits[index]) > last_review_time:
                 self.incremental.first_new_commit = self.pr_commits[index]
                 first_new_commit_index = index
             else:
