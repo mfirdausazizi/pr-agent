@@ -27,6 +27,23 @@ MODEL_RETRIES = 2
 DUMMY_LITELLM_API_KEY = "dummy_key"  # placeholder set when no OpenAI key is configured
 
 
+def _string_list(value) -> list[str]:
+    """Accept a list, a JSON list string, or a comma-separated string (env style); invalid input -> []."""
+    if isinstance(value, str):
+        value = value.strip()
+        if value.startswith("["):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                get_logger().warning("Invalid additional_reasoning_effort_models; ignoring it.")
+                return []
+        else:
+            value = value.split(",")
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
 class LiteLLMAIHandler(BaseAiHandler):
     """
     This class handles interactions with the OpenAI API for chat completions.
@@ -231,8 +248,11 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Model that doesn't support temperature argument
         self.no_support_temperature_models = NO_SUPPORT_TEMPERATURE_MODELS
 
-        # Models that support reasoning effort
+        # Models that support reasoning effort, plus config-listed OpenAI-compatible proxy models
+        # (backport of upstream #3460; entries match exactly or through a provider prefix)
         self.support_reasoning_models = SUPPORT_REASONING_EFFORT_MODELS
+        self.additional_reasoning_models = _string_list(
+            get_settings().config.get("additional_reasoning_effort_models", []))
 
         # Models that support extended thinking
         self.claude_extended_thinking_models = CLAUDE_EXTENDED_THINKING_MODELS
@@ -480,7 +500,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                         del kwargs['temperature']
 
                 # Add reasoning_effort if model supports it
-                if model in self.support_reasoning_models:
+                is_additional_reasoning_model = not thinking_kwargs_gpt5 and any(
+                    model == m or model.endswith("/" + m) for m in self.additional_reasoning_models)
+                if model in self.support_reasoning_models or is_additional_reasoning_model:
                     config_effort = get_settings().config.reasoning_effort
                     try:
                         ReasoningEffort(config_effort)
@@ -495,6 +517,11 @@ class LiteLLMAIHandler(BaseAiHandler):
 
                     get_logger().info(f"Adding reasoning_effort with value {reasoning_effort} to model {model}.")
                     kwargs["reasoning_effort"] = reasoning_effort
+                    if is_additional_reasoning_model:
+                        # LiteLLM drops reasoning_effort for model IDs it does not know; whitelist it.
+                        allowed_params = kwargs.get("allowed_openai_params") or []
+                        if "reasoning_effort" not in allowed_params:
+                            kwargs["allowed_openai_params"] = [*allowed_params, "reasoning_effort"]
 
                 # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
                 if (model in self.claude_extended_thinking_models) and get_settings().config.get("enable_claude_extended_thinking", False):

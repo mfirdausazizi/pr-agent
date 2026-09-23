@@ -682,3 +682,41 @@ class TestLiteLLMReasoningEffort:
             # Should have reasoning_effort
             call_kwargs = mock_completion.call_args[1]
             assert call_kwargs["reasoning_effort"] == "medium"
+
+
+def _settings_with_additional_models(additional):
+    settings = create_mock_settings("high")
+    settings.config.get = lambda key, default=None: (
+        additional if key == "additional_reasoning_effort_models" else default)
+    return settings
+
+
+class TestAdditionalReasoningEffortModels:
+    """config.additional_reasoning_effort_models extends reasoning_effort to OpenAI-compatible proxy models."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("additional", [
+        ["claude-opus-5-5", "gpt-6-sol"],
+        "claude-opus-5-5, gpt-6-sol",
+        '["openai/claude-opus-5-5", "openai/gpt-6-sol"]',
+    ])
+    @pytest.mark.parametrize("model", ["openai/claude-opus-5-5", "openai/gpt-6-sol"])
+    async def test_listed_model_receives_reasoning_effort(self, monkeypatch, mock_logger, additional, model):
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: _settings_with_additional_models(additional))
+        with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion',
+                   new_callable=AsyncMock) as mock_completion:
+            mock_completion.return_value = create_mock_acompletion_response()
+            await LiteLLMAIHandler().chat_completion(model=model, system="s", user="u")
+        kwargs = mock_completion.call_args[1]
+        assert kwargs["reasoning_effort"] == "high"
+        assert "reasoning_effort" in kwargs["allowed_openai_params"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("additional", [[], None, "", ["claude-opus-5"]])
+    async def test_unlisted_model_gets_no_reasoning_effort(self, monkeypatch, mock_logger, additional):
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: _settings_with_additional_models(additional))
+        with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion',
+                   new_callable=AsyncMock) as mock_completion:
+            mock_completion.return_value = create_mock_acompletion_response()
+            await LiteLLMAIHandler().chat_completion(model="openai/claude-opus-5-5", system="s", user="u")
+        assert "reasoning_effort" not in mock_completion.call_args[1]

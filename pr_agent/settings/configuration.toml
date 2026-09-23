@@ -62,6 +62,9 @@ ignore_language_framework = [] # a list of code-generation languages or framewor
 is_auto_command = false # will be auto-set to true if the command is triggered by an automation
 enable_ai_metadata = false # will enable adding ai metadata
 reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh"
+# Additional OpenAI-compatible model IDs that should receive reasoning_effort (appended to the built-in list).
+# IDs match exactly or through a provider prefix, e.g. "gpt-6-sol" matches "openai/gpt-6-sol".
+additional_reasoning_effort_models = []
 # extended thinking for Claude reasoning models
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
 extended_thinking_budget_tokens = 2048
