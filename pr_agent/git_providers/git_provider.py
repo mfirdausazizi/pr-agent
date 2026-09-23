@@ -39,6 +39,7 @@ def _clone_authorization_header(repo_url: str) -> str | None:
     encoded = base64.b64encode(credentials.encode("utf-8")).decode("ascii")
     return f"Authorization: Basic {encoded}"
 
+
 def get_git_ssl_env() -> dict[str, str]:
     """
     Get git SSL configuration arguments for per-command use.
@@ -220,8 +221,8 @@ class GitProvider(ABC):
             if not destination_existed and os.path.isdir(dest_folder):
                 shutil.rmtree(dest_folder, ignore_errors=True)
             get_logger().error("Clone failed: Could not clone url.",
-                artifact={"error": redact_credentials(e), "url": redact_credentials(clone_url),
-                          "dest_folder": dest_folder})
+                               artifact={"error": redact_credentials(e), "url": redact_credentials(clone_url),
+                                         "dest_folder": dest_folder})
         finally:
             return returned_obj
 
