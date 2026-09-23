@@ -1315,6 +1315,7 @@ class GithubProvider(GitProvider):
 
         clone_url = scheme
         if self.deployment_type == 'app':
-            clone_url += "git: "
+            # GitHub App installation tokens authenticate as the x-access-token user.
+            clone_url += "x-access-token:"
         clone_url += f"{github_token}@{github_com}{repo_full_name}"
         return clone_url

@@ -235,3 +235,52 @@ class TestCloneUrlValidationLogs:
 
         assert logged, "nothing was logged, so the assertion below would be vacuous"
         assert "GTSECRET" not in logged
+
+
+@pytest.mark.parametrize("userinfo, expected", [
+    ("oauth2:pass%40word", b"oauth2:pass@word"),
+    ("user%3Aname:p%3Aw", b"user:name:p:w"),
+    ("oauth2:100%25", b"oauth2:100%"),
+    ("oauth2:a+b", b"oauth2:a+b"),
+    ("x-access-token:ghs_plain", b"x-access-token:ghs_plain"),
+])
+def test_clone_header_decodes_percent_escaped_credentials_like_git(userinfo, expected):
+    from pr_agent.git_providers.git_provider import _clone_authorization_header
+
+    header = _clone_authorization_header(f"https://{userinfo}@example.com/org/repo.git")
+    assert header == "Authorization: Basic " + base64.b64encode(expected).decode("ascii")
+
+
+def _github_app_provider():
+    from pr_agent.git_providers.github_provider import GithubProvider
+
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.auth = SimpleNamespace(token="ghs_APPSECRET")
+    provider.base_url_html = "https://github.com"
+    provider.deployment_type = "app"
+    return provider
+
+
+def test_github_app_clone_keeps_token_out_of_argv_and_sends_x_access_token():
+    provider = _github_app_provider()
+    clone_url = provider._prepare_clone_url_with_token("https://github.com/acme/repo.git")
+    with patch("pr_agent.git_providers.git_provider.get_git_ssl_env", return_value={}), \
+            patch("pr_agent.git_providers.git_provider.subprocess.run") as run:
+        provider._clone_inner(clone_url, "/tmp/unused-dest", 5)
+
+    argv = run.call_args.args[0]
+    env = run.call_args.kwargs["env"]
+    assert all("ghs_APPSECRET" not in arg for arg in argv)
+    assert argv[-2] == "https://github.com/acme/repo.git"
+    assert env["GIT_CONFIG_VALUE_0"] == "Authorization: Basic " + base64.b64encode(
+        b"x-access-token:ghs_APPSECRET").decode("ascii")
+
+
+def test_github_app_clone_failure_artifact_has_no_token(tmp_path):
+    provider = _github_app_provider()
+    with patch("pr_agent.git_providers.git_provider.get_git_ssl_env", return_value={}), \
+            patch("pr_agent.git_providers.git_provider.subprocess.run", side_effect=RuntimeError("boom")), \
+            patch("pr_agent.git_providers.git_provider.get_logger") as logger:
+        assert provider.clone("https://github.com/acme/repo.git", str(tmp_path / "checkout")) is None
+
+    assert "ghs_APPSECRET" not in repr(logger.mock_calls)

@@ -6,7 +6,7 @@ import re
 import shutil
 import subprocess
 from typing import Optional, Tuple
-from urllib.parse import urlsplit
+from urllib.parse import unquote_to_bytes, urlsplit
 
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import Range, process_description
@@ -35,8 +35,9 @@ def _clone_authorization_header(repo_url: str) -> str | None:
     parsed = urlsplit(repo_url)
     if parsed.username is None:
         return None
-    credentials = f"{parsed.username}:" if parsed.password is None else f"{parsed.username}:{parsed.password}"
-    encoded = base64.b64encode(credentials.encode("utf-8")).decode("ascii")
+    # Percent-decode userinfo exactly as git/libcurl does before building Basic auth.
+    credentials = unquote_to_bytes(parsed.username) + b":" + unquote_to_bytes(parsed.password or "")
+    encoded = base64.b64encode(credentials).decode("ascii")
     return f"Authorization: Basic {encoded}"
 
 
