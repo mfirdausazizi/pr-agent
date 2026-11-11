@@ -247,7 +247,7 @@ Verification confirmed typed effective settings, environment replay after simula
 
 ### Rollback
 
-1. Restore `GITHUB_APP__PUSH_COMMANDS` to `["/review -i --config.ensemble_models=openai/claude-opus-5","/improve --config.ensemble_models=openai/claude-opus-5"]`.
+1. Restore `GITHUB_APP__PUSH_COMMANDS` to `["/review -i --config.ensemble_models=openai/claude-opus-5","/improve --config.ensemble_models=openai/claude-opus-5"]`. Since the 2026-09-23 model swap, use `openai/claude-opus-5-5` instead (note: `apply_repo_settings` replays `CONFIG__ENSEMBLE_MODELS`, so these CLI overrides have no effect anyway).
 2. Delete the production and preview rows for the newly added `PR_REVIEWER__*` keys plus `PR_CODE_SUGGESTIONS__FOCUS_ONLY_ON_PROBLEMS`, `PR_CODE_SUGGESTIONS__SUGGESTIONS_SCORE_THRESHOLD`, `PR_CODE_SUGGESTIONS__PUBLISH_OUTPUT_NO_SUGGESTIONS`, and `PR_CODE_SUGGESTIONS__MAX_HISTORY_LEN`.
-3. Queue a normal Coolify deployment explicitly pinned to `73f3caee6ac062ff0e1b4b5444b4ad5e3e1bf48d`; Dockerfile apps cannot use Coolify restart-only for this change.
+3. Queue a normal Coolify deployment; Dockerfile apps cannot use Coolify restart-only for this change. **Updated 2026-11-10:** the app now tracks `deploy/canary` with stored commit `HEAD`; deploy with `commit: 'HEAD'` (or the UI Redeploy). Do not pin to `73f3caee`: that rolls back later fixes and trips the commit-drift alert. See `AGENTS.md`.
 4. Verify the restored command list and effective Dynaconf settings in the replacement container.

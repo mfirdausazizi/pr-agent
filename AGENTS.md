@@ -71,13 +71,26 @@ PR-Agent automates AI-assisted reviews for pull requests across multiple git pro
 - Canary app: name `pr-agent-fork-canary`, Coolify UUID `ahib8a9mgq077qljkszetods`.
   - URL: `https://ahib8a9mgq077qljkszetods.149.118.150.110.sslip.io`.
   - Webhook endpoint: `/api/v1/github_webhooks`.
-  - Source: `mfirdausazizi/pr-agent`, branch `feature/agentic-repo-access`, commit
-    `73f3caee6ac062ff0e1b4b5444b4ad5e3e1bf48d` (P0 scan/anchor bounds + P1 planner removal / `raise_on_error`;
-    also on `feat/multi-model-ensemble` via merge `e8972376`).
-  - Running container: `ahib8a9mgq077qljkszetods-135836484725`.
+  - Source: `mfirdausazizi/pr-agent`, Coolify tracks branch **`deploy/canary`** with stored commit `HEAD`
+    (since 2026-11-10). `deploy/canary` currently points at `6b6528292eddc704b57a72c92bc4d9a06ea75b28`
+    (= `fix/upstream-high-impact`: `73f3caee` + upstream security/reasoning/push-trigger/incremental/LiteLLM-error
+    fixes). To release, push the intended commit to `deploy/canary`, then deploy; a UI Redeploy always builds its
+    head. Never set the app's stored `git_commit_sha` to a fixed SHA again.
+  - Incident 2026-11-10: on 2026-09-30 two UI Redeploys used a stale stored `git_commit_sha` (`9a7d5fab`, June),
+    silently rolling back the `/tmp/*.toml` FD-leak fix (`fba1a95f`). Workers hit 1024 FDs, failed with
+    `Too many open files` / `Failed to get git provider`, and 23 PRs got no review.
+  - Monitoring: `/etc/cron.d/pr-agent-canary-check` runs `/usr/local/sbin/pr-agent-canary-check.sh` every 15 min
+    (log `/var/log/pr-agent-canary-check.log`; `--dry-run` to test). It posts to the Coolify Root Team Slack webhook
+    (`/etc/pr-agent-canary-alert.env`, root 0600) when a worker exceeds 500 FDs, EMFILE/git-provider errors appear,
+    the container is down, or the running image commit differs from `deploy/canary` head. Same alert repeats at
+    most every 6h.
+  - Running container: `ahib8a9mgq077qljkszetods-20261110T233331`.
   - Build: `/docker/Dockerfile`, target `github_app`, port `3000`.
-  - Latest deployment UUID: `qunp4k6dvtbcblo9zsl2xrwn` (finished 2026-08-28 14:04 UTC).
-  - Running image: `ahib8a9mgq077qljkszetods:73f3caee6ac062ff0e1b4b5444b4ad5e3e1bf48d`.
+  - Latest deployment UUID: `dekdotpoz8hojq7m986aixae` (finished 2026-11-10 23:33 UTC, commit `HEAD` →
+    `6b652829`, fallback-models fix). Previous: `nrypz7zg00h3ap8d9gsbvw42` (deploy/canary + gunicorn recycling),
+    `somh2yzlj9gec4ukt04at9xd` (incident fix), `bqudtxx1mhouilafws08rmnq` and
+    `kvtp3miag72bky22ppdqigrx` (accidental `9a7d5fab` rollbacks), `ryx4pkau5s0h628v277h4fer`.
+  - Running image: `ahib8a9mgq077qljkszetods:6b6528292eddc704b57a72c92bc4d9a06ea75b28`.
   - Previous canary images still on the host: `fba1a95f…` (FD-only) and `8f86b69…`.
   - `feat/multi-model-ensemble` is merged into fork `main` (merge commit `4571eee6`). Repo-context PRs #2 and #3
     are merged into `feat/multi-model-ensemble` but not into fork `main`.
@@ -85,7 +98,7 @@ PR-Agent automates AI-assisted reviews for pull requests across multiple git pro
   `https://pr-agent.fatomate.com/api/v1/github_webhooks` tracks **upstream** `the-pr-agent/pr-agent` `main`
   (idle since June) and does **not** carry ensemble or repo-context. Do not repoint the webhook there
   unless that app is rebuilt from the fork.
-- Ensemble policy: run the full 2-model ensemble (`openai/claude-opus-5` + `openai/gpt-5.6-sol`) for enabled
+- Ensemble policy: run the full 2-model ensemble (`openai/claude-opus-5-5` + `openai/gpt-6.1-sol`) for enabled
   review tools; cost/tokens are accepted. `--config.ensemble_models=...` CLI overrides in automated commands do
   not take effect because `apply_repo_settings` replays `CONFIG__ENSEMBLE_MODELS` as the highest-precedence layer.
   Use tool-section overrides only when no environment variable for that key exists. See
@@ -93,11 +106,18 @@ PR-Agent automates AI-assisted reviews for pull requests across multiple git pro
 - Automation and strictness config currently set on the canary:
   - `GITHUB_APP__PR_COMMANDS=["/describe --pr_description.final_update_message=false","/review","/improve"]`
   - `GITHUB_APP__PUSH_COMMANDS=["/review -i"]`
-  - `GITHUB_APP__PUSH_TRIGGER_WAIT_FOR_INITIAL_REVIEW=true`
+  - `GITHUB_APP__PUSH_TRIGGER_WAIT_FOR_INITIAL_REVIEW=true` (inert: no runtime code reads this key)
   - `GITHUB_APP__HANDLE_PUSH_TRIGGER=true`
-  - `CONFIG__ENSEMBLE_MODELS=openai/claude-opus-5,openai/gpt-5.6-sol`
-  - `CONFIG__ENSEMBLE_CONSOLIDATOR_MODEL=openai/claude-opus-5`
-  - `CONFIG__REASONING_EFFORT=high`
+  - `CONFIG__MODEL=openai/claude-opus-5-5`, `CONFIG__FALLBACK_MODELS=["openai/gpt-6.1-sol"]` (the production row was
+    malformed as `[\"openai/gpt-6.1-sol]` from 2026-09-30 until deployment `dekdotpoz8hojq7m986aixae` on 2026-11-10)
+  - `CONFIG__ENSEMBLE_MODELS=openai/claude-opus-5-5,openai/gpt-6.1-sol` (changed from `gpt-6-sol` on 2026-09-30)
+  - `CONFIG__ENSEMBLE_CONSOLIDATOR_MODEL=openai/claude-opus-5-5`
+  - Rollback of the 2026-09-23 model swap: restore `claude-opus-5` / `gpt-5.6-sol` in these four keys (production
+    and preview rows, via Coolify tinker since values are encrypted) and redeploy pinned to `73f3caee`.
+  - `CONFIG__REASONING_EFFORT=medium` and `CONFIG__ADDITIONAL_REASONING_EFFORT_MODELS=claude-opus-5-5,gpt-6.1-sol`
+    (2026-09-23; `gpt-6.1-sol` since 2026-09-30). Before `6b652829`, reasoning_effort was never sent for `openai/`-prefixed proxy models, so the old
+    `high` value had no effect. Rollback: set effort back to `high`, delete both production and preview rows of the
+    new key, redeploy pinned to `73f3caee` (or keep `6b652829`; without the new key its requests match `73f3caee`).
   - Service-wide reviewer overrides: maximum 2 findings; security and clean-result output retained; tests, effort,
     split, score, and ticket sections disabled; incremental thresholds are 3 commits or 30 minutes; P0/P1-only
     evidence rubric. These environment variables intentionally override repository settings for every repo served
@@ -105,7 +125,9 @@ PR-Agent automates AI-assisted reviews for pull requests across multiple git pro
   - Service-wide `/improve` overrides: problem-only mode, score threshold 8, silent no-suggestion output, and one
     history entry.
   - Exact deployed settings and rollback procedure: `docs/pr-agent-review-strictness-report.md`.
-  - `GUNICORN_CMD_ARGS=--timeout 600`
+  - `GUNICORN_CMD_ARGS=--timeout 600 --graceful-timeout 600 --max-requests 500 --max-requests-jitter 100`
+    (2026-11-10): workers recycle after ~500 requests so any FD leak stays bounded; the graceful timeout lets
+    in-flight reviews (Starlette background tasks) finish. Rollback: set both rows back to `--timeout 600`.
 - Agentic repo context and related-PR detection status:
   - Production path is deterministic seed context (audits/refs/importers/tests). The unused LLM planner loop
     was removed in `73f3caee`.
